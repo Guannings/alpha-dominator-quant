@@ -1,19 +1,20 @@
 #!/usr/bin/env python3
 """
-Regime-Adaptive Mean-Variance Optimization Strategy - Version 9.1
-==================================================================
-"The Diverse Titan" - RS Filter + Adaptive Rebalancing + No Gold Bug
+Regime-Adaptive Mean-Variance Optimization Strategy - Version 10.0
+===================================================================
+"The Alpha Dominator" - IR Filter + Growth Anchor + Regularized ML
 
 Key innovations:
-1. Velvet Rope RS Filter: Only assets beating SPY are eligible in RISK_ON
-2. Adaptive Rebalancing: Auto-selects 21/42/63 day frequency per window
-3. Gold capped at 10% in Bull markets
-4. 85% minimum equity in RISK_ON
-5. Raw momentum (no vol penalty on winners)
-6. Overfitting health dashboard with stability bands
+1. Information Ratio Filter: Only assets with IR > 0.5 vs SPY are eligible in RISK_ON
+2. Growth Anchor: QQQ + XLK minimum 50% weight during RISK_ON
+3. Gold capped at 5% in Bull markets
+4. Regularized Random Forest (max_depth=4, ccp_alpha=0.01)
+5. Yield Spread & Equity Risk Premium features (VIX removed)
+6. 3-day EMA probability smoothing
+7. Overfitting health dashboard with stability bands & red alerts
 
 Author: Quantitative Research
-Version: 9.1.0
+Version: 10.0.0
 """
 
 import warnings
@@ -44,21 +45,22 @@ sns.set_palette("husl")
 
 @dataclass
 class StrategyConfig:
-    """Strategy configuration."""
+    """Strategy configuration for The Alpha Dominator."""
 
     ml_threshold: float = 0.50
     sma_lookback: int = 200
-    rs_lookback: int = 126  # 6-month relative strength
+    rs_lookback: int = 126  # 6-month for IR calculation
 
     momentum_3m_days: int = 63
     momentum_6m_days: int = 126
     volatility_lookback: int = 60
 
     max_single_weight: float = 0.35
-    gold_cap_risk_on: float = 0.10  # 10% max gold in bull
-    min_equity_risk_on: float = 0.85  # 85% min equity in bull
+    gold_cap_risk_on: float = 0.05  # 5% max gold in bull (The Gold Cap)
+    min_growth_anchor: float = 0.50  # 50% min QQQ+XLK in RISK_ON (Growth Anchor)
+    ir_threshold: float = 0.5  # IR > 0.5 required for eligibility (Velvet Rope)
 
-    entropy_lambda: float = 0.12
+    entropy_lambda: float = 0.15  # Shannon Entropy coefficient
     min_effective_n: float = 3.0
 
     # Adaptive rebalancing candidates
@@ -67,16 +69,21 @@ class StrategyConfig:
     transaction_cost_bps: float = 10.0
     risk_free_rate: float = 0.04
 
-    # Overfitting threshold
-    overfit_gap_threshold: float = 0.15
+    # Overfitting thresholds
+    overfit_gap_threshold: float = 0.12  # 12% gap = overfitting alert
+    underfit_threshold: float = 0.51  # Below 51% = underfitting alert
+
+    # EMA smoothing for ML probabilities
+    prob_ema_span: int = 3  # 3-day EMA
 
 
 class DataManager:
-    """Data acquisition with Relative Strength calculation."""
+    """Data acquisition with Information Ratio and macro feature calculation."""
 
     EQUITIES = ['SPY', 'QQQ', 'IWM', 'VEA', 'XLK', 'XLE', 'XLP']
     FIXED_INCOME = ['TLT', 'IEF', 'SHY']
     ALTERNATIVES = ['GLD', 'VNQ']
+    GROWTH_ANCHORS = ['QQQ', 'XLK']  # The Growth Anchor assets
     VIX_TICKER = '^VIX'
 
     def __init__(self, start_date: str = '2007-01-01', end_date: str = None,
@@ -94,6 +101,7 @@ class DataManager:
         self.above_sma: Optional[pd.DataFrame] = None
         self.raw_momentum: Optional[pd.DataFrame] = None
         self.relative_strength: Optional[pd.DataFrame] = None
+        self.information_ratio: Optional[pd.DataFrame] = None  # New: IR filter
         self.asset_volatilities: Optional[pd.DataFrame] = None
 
     def load_data(self, max_retries: int = 3) -> None:
@@ -142,7 +150,7 @@ class DataManager:
                     raise RuntimeError("Data loading failed")
 
     def _calculate_indicators(self) -> None:
-        """Calculate SMA, momentum, and Relative Strength."""
+        """Calculate SMA, momentum, Relative Strength, and Information Ratio."""
         # 200-day SMA
         self.sma_200 = self.prices.rolling(self.config.sma_lookback).mean()
         self.above_sma = self.prices > self.sma_200
@@ -166,22 +174,80 @@ class DataManager:
 
         self.relative_strength = self.relative_strength.ffill().bfill()
 
-        # Log RS leaders
+        # INFORMATION RATIO: (Asset_Return - SPY_Return) / Tracking_Error
+        # Rolling 6-month (126-day) calculation
+        self.information_ratio = pd.DataFrame(index=self.prices.index)
+        spy_daily_ret = self.returns['SPY']
+
+        for ticker in self.all_tickers:
+            if ticker == 'SPY':
+                self.information_ratio[ticker] = 0.0
+                continue
+
+            asset_daily_ret = self.returns[ticker]
+            active_ret = asset_daily_ret - spy_daily_ret
+
+            # Rolling IR = mean(active_ret) * sqrt(252) / std(active_ret) * sqrt(252)
+            # Simplified: IR = mean / std * sqrt(252 / lookback)
+            rolling_mean = active_ret.rolling(self.config.rs_lookback).mean()
+            rolling_std = active_ret.rolling(self.config.rs_lookback).std()
+            tracking_error = rolling_std * np.sqrt(252)  # Annualized tracking error
+
+            # Annualized active return
+            annualized_active = rolling_mean * 252
+
+            # IR = Annualized Active Return / Tracking Error
+            ir = annualized_active / tracking_error.replace(0, np.nan)
+            self.information_ratio[ticker] = ir
+
+        self.information_ratio = self.information_ratio.replace([np.inf, -np.inf], np.nan).ffill().bfill()
+
+        # Log RS and IR leaders
         latest_rs = self.relative_strength.iloc[-1].sort_values(ascending=False)
-        positive_rs = (latest_rs > 0).sum()
-        logger.info(f"Assets with positive RS vs SPY: {positive_rs}/{len(latest_rs)}")
-        logger.info(f"RS leaders: {latest_rs.head(3).round(3).to_dict()}")
+        latest_ir = self.information_ratio.iloc[-1].sort_values(ascending=False)
+        positive_ir = (latest_ir > self.config.ir_threshold).sum()
+        logger.info(f"Assets with IR > {self.config.ir_threshold} vs SPY: {positive_ir}/{len(latest_ir)}")
+        logger.info(f"IR leaders: {latest_ir.head(3).round(3).to_dict()}")
 
     def engineer_features(self) -> pd.DataFrame:
-        """Engineer features for regime classification."""
+        """Engineer features for regime classification.
+
+        Features (VIX removed per Alpha Dominator spec):
+        - realized_vol: Rolling 60-day realized volatility
+        - yield_spread_proxy: 3-month momentum of SHY/TLT ratio
+        - equity_risk_premium: Earnings yield proxy minus treasury yield proxy
+        - trend_score: SPY distance from 200-SMA (normalized)
+        """
         if self.prices is None:
             raise ValueError("Load data first")
 
         features = pd.DataFrame(index=self.prices.index)
         spy_returns = self.returns['SPY']
 
+        # Realized volatility (kept)
         features['realized_vol'] = spy_returns.rolling(60).std() * np.sqrt(252)
-        features['vix_normalized'] = self.vix / 100.0
+
+        # YIELD SPREAD PROXY: 3-month momentum of SHY/TLT ratio
+        # SHY = short-term treasury, TLT = long-term treasury
+        # Rising ratio = steepening yield curve (bullish)
+        if 'SHY' in self.prices.columns and 'TLT' in self.prices.columns:
+            shy_tlt_ratio = self.prices['SHY'] / self.prices['TLT']
+            features['yield_spread_proxy'] = shy_tlt_ratio.pct_change(self.config.momentum_3m_days)
+        else:
+            features['yield_spread_proxy'] = 0.0
+
+        # EQUITY RISK PREMIUM PROXY
+        # Earnings Yield ~ 1/P/E ~ can proxy as inverse of SPY price momentum
+        # Treasury Yield ~ SHY return (short-term)
+        # Positive = stocks attractive vs bonds
+        spy_earnings_yield_proxy = 1.0 / (self.prices['SPY'] / self.prices['SPY'].rolling(252).mean())
+        if 'SHY' in self.returns.columns:
+            treasury_yield_proxy = self.returns['SHY'].rolling(252).mean() * 252  # Annualized
+        else:
+            treasury_yield_proxy = self.config.risk_free_rate
+        features['equity_risk_premium'] = spy_earnings_yield_proxy - treasury_yield_proxy
+
+        # Trend score (kept)
         spy_sma = self.sma_200['SPY']
         features['trend_score'] = (self.prices['SPY'] - spy_sma) / spy_sma
 
@@ -191,13 +257,14 @@ class DataManager:
         return self.features
 
     def get_aligned_data(self) -> Tuple[pd.DataFrame, ...]:
-        """Return aligned datasets."""
+        """Return aligned datasets including Information Ratio."""
         idx = (self.prices.index
                .intersection(self.features.index)
                .intersection(self.returns.index)
                .intersection(self.sma_200.dropna().index)
                .intersection(self.raw_momentum.dropna().index)
-               .intersection(self.relative_strength.dropna().index))
+               .intersection(self.relative_strength.dropna().index)
+               .intersection(self.information_ratio.dropna().index))
 
         return (
             self.prices.loc[idx],
@@ -208,7 +275,8 @@ class DataManager:
             self.above_sma.loc[idx],
             self.raw_momentum.loc[idx],
             self.relative_strength.loc[idx],
-            self.asset_volatilities.loc[idx]
+            self.asset_volatilities.loc[idx],
+            self.information_ratio.loc[idx]  # Added IR
         )
 
     def get_asset_categories(self) -> Dict[str, List[str]]:
@@ -226,7 +294,13 @@ class DataManager:
 
 class AdaptiveRegimeClassifier:
     """
-    Random Forest classifier with adaptive rebalancing selection.
+    Regularized Random Forest classifier with adaptive rebalancing selection.
+
+    INTRINSIC REGULARIZATION (Anti-Overfit Module):
+    - max_depth=4: Shallow trees for macro-structural signals
+    - min_samples_leaf=100: Forces generalization
+    - max_features='log2': Feature subsampling
+    - ccp_alpha=0.01: Cost Complexity Pruning
 
     During walk-forward training, tests multiple rebalance frequencies
     and selects the one with highest Information Ratio.
@@ -235,12 +309,14 @@ class AdaptiveRegimeClassifier:
     def __init__(self, config: StrategyConfig = None):
         self.config = config or StrategyConfig()
 
+        # HARD-CODED regularization per Alpha Dominator spec
         self.model = RandomForestClassifier(
             n_estimators=90,
-            max_depth=4,
-            min_samples_leaf=50,
-            min_samples_split=100,
-            max_features='sqrt',
+            max_depth=4,  # Shallow for macro signals
+            min_samples_leaf=100,  # Force generalization
+            min_samples_split=200,  # Conservative splits
+            max_features='log2',  # Feature subsampling
+            ccp_alpha=0.01,  # Cost Complexity Pruning
             bootstrap=True,
             oob_score=True,
             random_state=42,
@@ -256,6 +332,7 @@ class AdaptiveRegimeClassifier:
         self.selected_rebalance_periods: List[int] = []
         self.shap_values: Optional[np.ndarray] = None
         self.shap_features: Optional[pd.DataFrame] = None
+        self.feature_importances_history: List[Dict] = []  # For rolling importance plot
 
         self.current_rebalance_period: int = 42  # Default
 
@@ -302,6 +379,7 @@ class AdaptiveRegimeClassifier:
     ) -> pd.Series:
         """
         Walk-forward training with adaptive rebalance selection.
+        Applies 3-day EMA smoothing to probabilities (anti-flicker).
         """
         logger.info("Starting adaptive walk-forward training")
 
@@ -345,6 +423,10 @@ class AdaptiveRegimeClassifier:
             self.test_scores.append(test_score)
             self.oob_scores.append(oob_score)
             self.window_dates.append(test_dates[0])
+
+            # Store feature importances for rolling plot
+            feat_imp = dict(zip(self.feature_names, self.model.feature_importances_))
+            self.feature_importances_history.append(feat_imp)
 
             # ADAPTIVE REBALANCE SELECTION
             y_pred_train = self.model.predict(X_train)
@@ -393,6 +475,10 @@ class AdaptiveRegimeClassifier:
 
         probabilities = probabilities.ffill()
 
+        # PROBABILITY SMOOTHING: Apply 3-day EMA to eliminate regime flickering
+        probabilities = probabilities.ewm(span=self.config.prob_ema_span, adjust=False).mean()
+        logger.info(f"Applied {self.config.prob_ema_span}-day EMA smoothing to probabilities")
+
         avg_train = np.mean(self.train_scores)
         avg_test = np.mean(self.test_scores)
         logger.info(f"Training complete: avg_train={avg_train:.3f}, avg_test={avg_test:.3f}")
@@ -423,81 +509,130 @@ class AdaptiveRegimeClassifier:
 
     def plot_validation_curves(self) -> None:
         """
-        Professional overfitting health dashboard.
-        - Rolling accuracy line
-        - Stability band (red if gap > 15%)
-        - Rebalance selector panel
+        Professional Model Health Dashboard per Alpha Dominator spec.
+        - Rolling 252-day test accuracy line
+        - Stability band (shaded between Train and Test)
+        - Red Alert: Background turns Light Red if gap > 12% OR test accuracy < 51%
+        - Feature Contribution subplot
         """
         if not self.train_scores:
             return
 
-        fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(14, 10),
-                                       gridspec_kw={'height_ratios': [3, 1]})
+        fig, axes = plt.subplots(3, 1, figsize=(14, 14),
+                                 gridspec_kw={'height_ratios': [3, 1.5, 1]})
+        ax1, ax2, ax3 = axes
 
         x = range(1, len(self.train_scores) + 1)
         train_arr = np.array(self.train_scores)
         test_arr = np.array(self.test_scores)
         gaps = train_arr - test_arr
 
-        # Main accuracy plot
+        # Determine alert status
+        has_overfit = np.any(gaps > self.config.overfit_gap_threshold)
+        has_underfit = np.any(test_arr < self.config.underfit_threshold)
+        alert_active = has_overfit or has_underfit
+
+        # RED ALERT: Change background if unhealthy
+        if alert_active:
+            ax1.set_facecolor('#FFCCCC')  # Light Red
+
+        # Main accuracy plot with stability band
         ax1.plot(x, train_arr, 'b-', label='Train Accuracy', linewidth=2, alpha=0.8)
-        ax1.plot(x, test_arr, 'r-', label='Test Accuracy', linewidth=2, alpha=0.8)
+        ax1.plot(x, test_arr, 'r-', label='Test Accuracy (252-day rolling)', linewidth=2, alpha=0.8)
         ax1.plot(x, self.oob_scores, 'g--', label='OOB Score', linewidth=1.5, alpha=0.6)
 
-        # Stability band - shade red if overfit
+        # Stability band - shade area between train and test
+        ax1.fill_between(x, train_arr, test_arr, alpha=0.25, color='orange', label='Stability Band')
+
+        # Mark overfit/underfit windows
         for i in range(len(x)):
             gap = gaps[i]
+            test_acc = test_arr[i]
             if gap > self.config.overfit_gap_threshold:
-                ax1.axvspan(x[i] - 0.5, x[i] + 0.5, alpha=0.3, color='red')
-            else:
-                ax1.fill_between([x[i] - 0.5, x[i] + 0.5],
-                                 [train_arr[i], train_arr[i]],
-                                 [test_arr[i], test_arr[i]],
-                                 alpha=0.2, color='yellow')
+                ax1.axvspan(x[i] - 0.5, x[i] + 0.5, alpha=0.4, color='red', zorder=0)
+            if test_acc < self.config.underfit_threshold:
+                ax1.scatter([x[i]], [test_acc], color='darkred', s=50, marker='x', zorder=5)
 
-        ax1.axhline(0.5, color='gray', linestyle='--', alpha=0.5, label='Random')
+        ax1.axhline(0.5, color='gray', linestyle='--', alpha=0.5, label='Random Baseline')
+        ax1.axhline(self.config.underfit_threshold, color='darkred', linestyle=':', alpha=0.5,
+                    label=f'Underfit Threshold ({self.config.underfit_threshold:.0%})')
 
+        # Status calculation
         avg_gap = np.mean(gaps)
         overfit_windows = np.sum(gaps > self.config.overfit_gap_threshold)
-        status = "⚠️ OVERFITTING DETECTED" if overfit_windows > len(gaps) * 0.3 else "✓ Model Stable"
+        underfit_windows = np.sum(test_arr < self.config.underfit_threshold)
+        accuracy_variance = np.var(test_arr)
 
-        ax1.set_title(f'Model Health Dashboard - {status}\n'
-                      f'Avg Gap: {avg_gap:.1%} | Overfit Windows: {overfit_windows}/{len(gaps)}',
+        if overfit_windows > len(gaps) * 0.3:
+            status = "⚠️ OVERFITTING DETECTED"
+        elif underfit_windows > len(gaps) * 0.3:
+            status = "⚠️ UNDERFITTING DETECTED"
+        else:
+            status = "✓ Model STABLE"
+
+        ax1.set_title(f'MODEL HEALTH DASHBOARD - {status}\n'
+                      f'Avg Gap: {avg_gap:.1%} | Overfit: {overfit_windows}/{len(gaps)} | '
+                      f'Underfit: {underfit_windows}/{len(gaps)}',
                       fontsize=12, fontweight='bold')
         ax1.set_ylabel('Accuracy')
         ax1.set_ylim(0.40, 0.85)
-        ax1.legend(loc='upper right')
+        ax1.legend(loc='upper right', fontsize=8)
         ax1.grid(True, alpha=0.3)
+
+        # Feature Contribution subplot (Yield Spread vs Trend Score)
+        if self.feature_importances_history:
+            feat_df = pd.DataFrame(self.feature_importances_history)
+            # Try to get yield_spread_proxy and trend_score importances
+            if 'yield_spread_proxy' in feat_df.columns:
+                ax2.plot(x, feat_df['yield_spread_proxy'].values, 'c-', linewidth=2,
+                         label='Yield Spread Proxy', alpha=0.8)
+            if 'trend_score' in feat_df.columns:
+                ax2.plot(x, feat_df['trend_score'].values, 'm-', linewidth=2,
+                         label='Trend Score', alpha=0.8)
+            if 'realized_vol' in feat_df.columns:
+                ax2.plot(x, feat_df['realized_vol'].values, 'y-', linewidth=2,
+                         label='Realized Vol', alpha=0.6)
+            if 'equity_risk_premium' in feat_df.columns:
+                ax2.plot(x, feat_df['equity_risk_premium'].values, 'g-', linewidth=2,
+                         label='Equity Risk Premium', alpha=0.6)
+
+            ax2.set_ylabel('Feature Importance')
+            ax2.set_title('Rolling Feature Contribution (Yield Spread vs Trend)', fontsize=10)
+            ax2.legend(loc='upper right', fontsize=8)
+            ax2.grid(True, alpha=0.3)
 
         # Rebalance selector panel
         colors = {21: '#2ecc71', 42: '#3498db', 63: '#9b59b6'}
         for i, (xi, freq) in enumerate(zip(x, self.selected_rebalance_periods)):
-            ax2.bar(xi, 1, color=colors.get(freq, 'gray'), alpha=0.8)
+            ax3.bar(xi, 1, color=colors.get(freq, 'gray'), alpha=0.8)
 
-        ax2.set_ylabel('Rebal Period')
-        ax2.set_xlabel('Walk-Forward Window')
-        ax2.set_title('Adaptive Rebalance Selection (21d=Green, 42d=Blue, 63d=Purple)', fontsize=10)
-        ax2.set_ylim(0, 1.2)
-        ax2.set_yticks([])
+        ax3.set_ylabel('Rebal Period')
+        ax3.set_xlabel('Walk-Forward Window')
+        ax3.set_title('Adaptive Rebalance Selection (21d=Green, 42d=Blue, 63d=Purple)', fontsize=10)
+        ax3.set_ylim(0, 1.2)
+        ax3.set_yticks([])
 
-        # Legend for rebalance
         legend_elements = [Patch(facecolor=c, label=f'{f}d') for f, c in colors.items()]
-        ax2.legend(handles=legend_elements, loc='upper right', ncol=3)
+        ax3.legend(handles=legend_elements, loc='upper right', ncol=3)
 
         plt.tight_layout()
         plt.show()
 
+        # Store stability status for terminal output
+        self.model_stability = "STABLE" if status.startswith("✓") else "VOLATILE"
+        self.accuracy_variance = accuracy_variance
 
-class DiverseTitanOptimizer:
+
+class AlphaDominatorOptimizer:
     """
-    The Diverse Titan: RS Filter + Gold Cap + Equity Minimum.
+    The Alpha Dominator: IR Filter + Growth Anchor + Shannon Entropy
 
-    RISK_ON:
-    - Only assets with RS > 0 (beating SPY) are eligible
-    - 85% minimum equity
-    - 10% max gold
-    - 0% bonds/cash
-    - Raw momentum + entropy objective
+    RISK_ON Constraints per Alpha Dominator Constitution:
+    - IR Filter (Velvet Rope): Only assets with IR > 0.5 vs SPY are eligible
+    - Growth Anchor: QQQ + XLK minimum 50% combined weight
+    - Gold Cap: GLD capped at 5% maximum
+    - Kill Sharpe/Volatility Traps: No vol penalty on growth leaders
+    - Shannon Entropy: Maximize IR_Score + (0.15 × Shannon Entropy)
     """
 
     def __init__(
@@ -516,25 +651,32 @@ class DiverseTitanOptimizer:
         self.bonds_cash_idx = [assets.index(a) for a in asset_categories.get('bonds_cash', []) if a in assets]
         self.safe_haven_idx = [assets.index(a) for a in asset_categories.get('safe_haven', []) if a in assets]
 
-        logger.info(f"DiverseTitan: {self.n_assets} assets, gold_idx={self.gold_idx}, bonds={self.bonds_cash_idx}")
+        # GROWTH ANCHOR: QQQ + XLK indices
+        self.growth_anchor_idx = [
+            assets.index(a) for a in ['QQQ', 'XLK']
+            if a in assets
+        ]
+
+        logger.info(f"AlphaDominator: {self.n_assets} assets, growth_anchor_idx={self.growth_anchor_idx}, "
+                    f"gold_idx={self.gold_idx}")
 
     def optimize(
             self,
             returns: pd.DataFrame,
             raw_momentum: pd.Series,
-            relative_strength: pd.Series,
+            information_ratio: pd.Series,
             asset_volatilities: pd.Series,
             regime: str,
             above_sma: pd.Series
     ) -> Tuple[np.ndarray, bool, str, Dict]:
         """
-        Optimize with RS filter and regime constraints.
+        Optimize with IR filter, Growth Anchor, and Shannon Entropy objective.
         """
         mean_ret = returns.mean() * 252
         cov = returns.cov() * 252
 
-        # Get eligible mask based on regime
-        eligible_mask = self._get_eligible_mask(relative_strength, above_sma, regime)
+        # Get eligible mask based on regime with IR filter
+        eligible_mask = self._get_eligible_mask(information_ratio, above_sma, regime)
         n_eligible = eligible_mask.sum()
 
         logger.debug(f"Regime={regime}, Eligible={n_eligible}/{self.n_assets}")
@@ -546,11 +688,11 @@ class DiverseTitanOptimizer:
         if n_eligible == 1:
             weights = np.zeros(self.n_assets)
             weights[eligible_mask] = 1.0
-            return weights, True, "single", self._calculate_diagnostics(weights, cov)
+            return weights, True, "single", self._calculate_diagnostics(weights, cov, information_ratio)
 
         # Build objective and constraints based on regime
         if regime == 'RISK_ON':
-            objective = self._build_risk_on_objective(mean_ret, cov, raw_momentum, eligible_mask)
+            objective = self._build_risk_on_objective(mean_ret, cov, information_ratio, eligible_mask)
             bounds = self._get_risk_on_bounds(eligible_mask)
         elif regime == 'RISK_REDUCED':
             objective = self._build_risk_reduced_objective(mean_ret, cov, eligible_mask)
@@ -566,25 +708,25 @@ class DiverseTitanOptimizer:
         if result is not None:
             weights = np.maximum(result.x, 0)
             weights = weights / weights.sum()
-            diagnostics = self._calculate_diagnostics(weights, cov)
+            diagnostics = self._calculate_diagnostics(weights, cov, information_ratio)
             return weights, True, method, diagnostics
         else:
             weights = self._equal_eligible(eligible_mask)
-            return weights, False, "equal_fallback", self._calculate_diagnostics(weights, cov)
+            return weights, False, "equal_fallback", self._calculate_diagnostics(weights, cov, information_ratio)
 
     def _get_eligible_mask(
             self,
-            relative_strength: pd.Series,
+            information_ratio: pd.Series,
             above_sma: pd.Series,
             regime: str
     ) -> np.ndarray:
         """
-        Get eligible assets using Velvet Rope RS Filter.
+        Get eligible assets using IR Filter (Velvet Rope).
 
-        RISK_ON: Only assets with RS > 0 (beating SPY)
+        RISK_ON: Only assets with IR > 0.5 (IR_threshold) are eligible
         Others: Above SMA is sufficient
         """
-        aligned_rs = relative_strength.reindex(pd.Index(self.assets)).fillna(-1)
+        aligned_ir = information_ratio.reindex(pd.Index(self.assets)).fillna(-1)
         aligned_sma = above_sma.reindex(pd.Index(self.assets)).fillna(False)
 
         eligible = np.ones(self.n_assets, dtype=bool)
@@ -593,22 +735,27 @@ class DiverseTitanOptimizer:
         eligible &= aligned_sma.values
 
         if regime == 'RISK_ON':
-            # VELVET ROPE: Must be beating SPY
-            eligible &= (aligned_rs.values > 0)
+            # IR FILTER (Velvet Rope): Must have IR > 0.5 vs SPY
+            eligible &= (aligned_ir.values > self.config.ir_threshold)
 
-            # Force bonds/cash to be ineligible
+            # Force bonds/cash to be ineligible in RISK_ON
             for idx in self.bonds_cash_idx:
                 eligible[idx] = False
 
-            logger.debug(f"RISK_ON RS filter: {eligible.sum()} eligible")
+            # But always allow Growth Anchors (QQQ, XLK) if above SMA
+            for idx in self.growth_anchor_idx:
+                if aligned_sma.values[idx]:
+                    eligible[idx] = True
+
+            logger.debug(f"RISK_ON IR filter (>{self.config.ir_threshold}): {eligible.sum()} eligible")
 
         return eligible
 
     def _get_risk_on_bounds(self, eligible_mask: np.ndarray) -> List[Tuple[float, float]]:
         """
-        RISK_ON bounds:
+        RISK_ON bounds per Alpha Dominator Constitution:
         - Max 35% per asset
-        - Gold capped at 10%
+        - Gold capped at 5% (The Gold Cap)
         - Bonds/cash = 0%
         """
         bounds = []
@@ -616,7 +763,7 @@ class DiverseTitanOptimizer:
             if not eligible_mask[i]:
                 bounds.append((0.0, 0.0))
             elif i in self.gold_idx:
-                bounds.append((0.0, self.config.gold_cap_risk_on))
+                bounds.append((0.0, self.config.gold_cap_risk_on))  # 5% cap
             elif i in self.bonds_cash_idx:
                 bounds.append((0.0, 0.0))  # Forced to 0
             else:
@@ -637,44 +784,48 @@ class DiverseTitanOptimizer:
             self,
             mean_ret: pd.Series,
             cov: pd.DataFrame,
-            raw_momentum: pd.Series,
+            information_ratio: pd.Series,
             eligible_mask: np.ndarray
     ) -> callable:
         """
-        RISK_ON: Maximize Raw_Momentum + 0.12*Entropy
-        NO SHARPE TRAP - no volatility penalty.
+        RISK_ON Objective: Maximize IR_Score + (0.15 × Shannon Entropy)
+
+        NO SHARPE TRAP - no volatility penalty on growth leaders.
+        GROWTH ANCHOR - soft penalty if QQQ+XLK < 50%
         """
-        aligned_mom = raw_momentum.reindex(pd.Index(self.assets)).fillna(0).values
+        aligned_ir = information_ratio.reindex(pd.Index(self.assets)).fillna(0).values
         mean_ret_arr = mean_ret.values
         cov_arr = cov.values
-        entropy_lambda = self.config.entropy_lambda
-        min_equity = self.config.min_equity_risk_on
+        entropy_lambda = self.config.entropy_lambda  # 0.15
+        min_growth_anchor = self.config.min_growth_anchor  # 50%
 
-        # Scale momentum
-        mom_scaled = np.where(aligned_mom > 0, aligned_mom, 0)
-        if mom_scaled.max() > 0:
-            mom_scaled = mom_scaled / mom_scaled.max()
+        # Scale IR scores to positive range for objective
+        ir_scaled = np.where(aligned_ir > 0, aligned_ir, 0)
+        if ir_scaled.max() > 0:
+            ir_scaled = ir_scaled / ir_scaled.max()
 
-        # Momentum-boosted returns
-        boosted_returns = mean_ret_arr * (1.0 + 2.5 * mom_scaled)
+        # IR-boosted returns (reward high IR assets)
+        boosted_returns = mean_ret_arr * (1.0 + 2.0 * ir_scaled)
+
+        growth_anchor_idx = self.growth_anchor_idx
 
         def objective(w):
-            # Portfolio return (raw momentum, no vol adjustment)
-            port_ret = np.dot(w, boosted_returns)
+            # IR Score component (no vol penalty - Kill Sharpe Trap)
+            ir_score = np.dot(w, boosted_returns)
 
-            # Shannon Entropy
+            # Shannon Entropy (anti-blocky weights)
             w_pos = w[w > 1e-6]
             entropy = -np.sum(w_pos * np.log(w_pos)) if len(w_pos) > 0 else 0
             n_eligible = eligible_mask.sum()
             max_entropy = np.log(n_eligible) if n_eligible > 1 else 1
             norm_entropy = entropy / max_entropy
 
-            # Soft penalty for equity constraint
-            equity_weight = sum(w[i] for i in self.equity_idx)
-            equity_penalty = max(0, min_equity - equity_weight) ** 2 * 20.0
+            # GROWTH ANCHOR: High-priority soft penalty if QQQ+XLK < 50%
+            growth_weight = sum(w[idx] for idx in growth_anchor_idx)
+            growth_penalty = max(0, min_growth_anchor - growth_weight) ** 2 * 50.0  # High priority
 
-            # Objective: maximize (return + entropy)
-            return -port_ret - entropy_lambda * norm_entropy + equity_penalty
+            # Objective: maximize (IR_Score + 0.15*Entropy) - penalties
+            return -ir_score - entropy_lambda * norm_entropy + growth_penalty
 
         return objective
 
@@ -727,7 +878,7 @@ class DiverseTitanOptimizer:
         starting_points = [
             ('equal', self._equal_eligible(eligible_mask)),
             ('inv_vol', self._inv_vol_eligible(cov, eligible_mask)),
-            ('momentum', self._momentum_tilt(eligible_mask)),
+            ('growth_tilt', self._growth_anchor_tilt(eligible_mask)),
         ]
 
         best_result = None
@@ -785,28 +936,42 @@ class DiverseTitanOptimizer:
             weights[eligible_mask] = inv_vols / inv_vols.sum()
         return weights
 
-    def _momentum_tilt(self, eligible_mask: np.ndarray) -> Optional[np.ndarray]:
-        """Momentum tilt start."""
+    def _growth_anchor_tilt(self, eligible_mask: np.ndarray) -> Optional[np.ndarray]:
+        """Growth anchor tilt: favor QQQ and XLK."""
         if eligible_mask.sum() == 0:
             return None
 
         weights = np.zeros(self.n_assets)
         n = eligible_mask.sum()
         indices = np.where(eligible_mask)[0]
-        tilt = np.linspace(1.5, 0.5, n)
-        tilt = tilt / tilt.sum()
 
-        for i, idx in enumerate(indices):
-            weights[idx] = tilt[i]
+        # Base equal weight
+        for idx in indices:
+            weights[idx] = 1.0 / n
+
+        # Boost growth anchors
+        for idx in self.growth_anchor_idx:
+            if eligible_mask[idx]:
+                weights[idx] *= 2.0  # Double weight for QQQ, XLK
+
+        # Normalize
+        if weights.sum() > 0:
+            weights = weights / weights.sum()
+
         return weights
 
     def _safe_fallback(self, regime: str) -> np.ndarray:
-        """Fallback allocation."""
+        """Fallback allocation prioritizing growth anchors."""
         weights = np.zeros(self.n_assets)
 
-        if regime == 'RISK_ON' and self.equity_idx:
-            for idx in self.equity_idx:
-                weights[idx] = 1.0 / len(self.equity_idx)
+        if regime == 'RISK_ON':
+            # Prioritize growth anchors
+            if self.growth_anchor_idx:
+                for idx in self.growth_anchor_idx:
+                    weights[idx] = 1.0 / len(self.growth_anchor_idx)
+            elif self.equity_idx:
+                for idx in self.equity_idx:
+                    weights[idx] = 1.0 / len(self.equity_idx)
         elif self.safe_haven_idx:
             for idx in self.safe_haven_idx:
                 weights[idx] = 1.0 / len(self.safe_haven_idx)
@@ -815,8 +980,9 @@ class DiverseTitanOptimizer:
 
         return weights
 
-    def _calculate_diagnostics(self, weights: np.ndarray, cov: pd.DataFrame) -> Dict:
-        """Calculate diagnostics."""
+    def _calculate_diagnostics(self, weights: np.ndarray, cov: pd.DataFrame,
+                               information_ratio: pd.Series) -> Dict:
+        """Calculate diagnostics including IR scores."""
         cov_arr = cov.values
         port_var = np.dot(weights.T, np.dot(cov_arr, weights))
         port_vol = np.sqrt(port_var)
@@ -828,15 +994,23 @@ class DiverseTitanOptimizer:
         entropy = -np.sum(w_pos * np.log(w_pos)) if len(w_pos) > 0 else 0
         effective_n = np.exp(entropy)
 
+        # Get IR scores for diagnostics
+        aligned_ir = information_ratio.reindex(pd.Index(self.assets)).fillna(0)
+        ir_scores = dict(zip(self.assets, aligned_ir.values))
+
+        # Calculate growth anchor weight
+        growth_anchor_weight = sum(weights[idx] for idx in self.growth_anchor_idx)
+
         return {
             'mctr': dict(zip(self.assets, mctr)),
             'pctr': dict(zip(self.assets, pctr)),
+            'ir_scores': ir_scores,
             'entropy': entropy,
             'effective_n': effective_n,
             'n_positions': np.sum(weights > 0.02),
             'port_volatility': port_vol,
-            'equity_weight': sum(weights[i] for i in self.equity_idx),
-            'gold_weight': sum(weights[i] for i in self.gold_idx)
+            'growth_anchor_weight': growth_anchor_weight,
+            'gold_weight': sum(weights[idx] for idx in self.gold_idx)
         }
 
 
@@ -857,7 +1031,7 @@ class BacktestEngine:
         self.transaction_costs: List[float] = []
         self.rebalance_periods_used: List[int] = []
         self.final_weights: Optional[np.ndarray] = None
-        self.final_rs: Optional[pd.Series] = None
+        self.final_ir: Optional[pd.Series] = None  # Changed from final_rs to final_ir
         self.final_diagnostics: Optional[Dict] = None
 
     def run(
@@ -870,11 +1044,12 @@ class BacktestEngine:
             raw_momentum: pd.DataFrame,
             relative_strength: pd.DataFrame,
             asset_volatilities: pd.DataFrame,
+            information_ratio: pd.DataFrame,
             classifier: AdaptiveRegimeClassifier,
-            optimizer: DiverseTitanOptimizer,
+            optimizer: 'AlphaDominatorOptimizer',
             lookback_days: int = 252
     ) -> pd.DataFrame:
-        """Execute backtest with adaptive rebalancing."""
+        """Execute backtest with adaptive rebalancing and IR filter."""
         logger.info("Starting backtest with adaptive rebalancing")
 
         portfolio_value = self.initial_capital
@@ -886,7 +1061,7 @@ class BacktestEngine:
                        .intersection(returns.index)
                        .intersection(above_sma.dropna().index)
                        .intersection(raw_momentum.dropna().index)
-                       .intersection(relative_strength.dropna().index))
+                       .intersection(information_ratio.dropna().index))
 
         start_idx = lookback_days
         if start_idx >= len(valid_dates):
@@ -919,7 +1094,7 @@ class BacktestEngine:
             spy_above = above_sma.loc[date, 'SPY'] if 'SPY' in above_sma.columns else True
             asset_above_sma = above_sma.loc[date]
             current_raw_mom = raw_momentum.loc[date]
-            current_rs = relative_strength.loc[date]
+            current_ir = information_ratio.loc[date]  # Use IR instead of RS
             current_vols = asset_volatilities.loc[date]
 
             # Update rebalance period from classifier
@@ -931,8 +1106,9 @@ class BacktestEngine:
                 lookback_start = valid_dates[i - lookback_days]
                 lookback_ret = returns.loc[lookback_start:prev_date][optimizer.assets]
 
+                # Use IR for optimization
                 new_weights, success, method, diagnostics = optimizer.optimize(
-                    lookback_ret, current_raw_mom, current_rs, current_vols,
+                    lookback_ret, current_raw_mom, current_ir, current_vols,
                     regime, asset_above_sma
                 )
 
@@ -953,7 +1129,7 @@ class BacktestEngine:
                     'date': date,
                     'regime': regime,
                     'weights': dict(zip(optimizer.assets, new_weights)),
-                    'rs_scores': current_rs.to_dict(),
+                    'ir_scores': current_ir.to_dict(),  # Store IR instead of RS
                     'effective_n': diagnostics.get('effective_n', 0) if diagnostics else 0,
                     'rebalance_period': rebalance_period,
                     'method': method
@@ -973,7 +1149,7 @@ class BacktestEngine:
             days_since_rebalance += 1
 
         self.final_weights = current_weights.copy()
-        self.final_rs = relative_strength.iloc[-1]
+        self.final_ir = information_ratio.iloc[-1]  # Changed from relative_strength to IR
         self.final_diagnostics = self.diagnostics_history[-1] if self.diagnostics_history else {}
 
         avg_eff_n = np.mean(
@@ -1073,7 +1249,7 @@ class BacktestEngine:
             f"Optimal Rebal: {metrics['optimal_rebalance_period']}d"
         )
 
-        ax.set_title('The Diverse Titan v9.1 - RS Filter + Adaptive Rebalancing', fontsize=12)
+        ax.set_title('The Alpha Dominator v10.0 - IR Filter + Growth Anchor', fontsize=12)
         ax.set_ylabel('Portfolio Value ($)')
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
         ax.legend(loc='upper left')
@@ -1099,7 +1275,7 @@ class BacktestEngine:
 
         cols = sorted(weights_df.columns)
         ax1.stackplot(weights_df.index, weights_df[cols].T, labels=cols, alpha=0.8)
-        ax1.set_title('Allocation (RS Filter: Only SPY Beaters in RISK_ON)', fontsize=12)
+        ax1.set_title('Allocation (IR Filter: Only IR>0.5 in RISK_ON + Growth Anchor)', fontsize=12)
         ax1.set_ylabel('Weight')
         ax1.set_ylim(0, 1)
         ax1.legend(loc='upper left', bbox_to_anchor=(1.02, 1), fontsize=9)
@@ -1309,44 +1485,49 @@ class MonteCarloSimulator:
 
 
 def main():
-    """Main execution function for Version 9.1."""
+    """Main execution function for Version 10.0 - The Alpha Dominator."""
     print("=" * 80)
-    print("REGIME-ADAPTIVE STRATEGY v9.1 - THE DIVERSE TITAN")
-    print("RS Filter + Adaptive Rebalancing + Growth Focus")
+    print("THE ALPHA DOMINATOR v10.0")
+    print("IR Filter + Growth Anchor + Regularized ML")
     print("=" * 80)
     print()
 
     config = StrategyConfig()
 
     # 1. Data Loading
-    print("[1/6] Loading data and calculating relative strength...")
+    print("[1/6] Loading data and calculating Information Ratio...")
     dm = DataManager(start_date='2007-01-01', config=config)
     dm.load_data()
     dm.engineer_features()
 
-    # Unpack aligned data (9 items)
-    prices, returns, features, vix, sma_200, above_sma, raw_mom, rs, vols = dm.get_aligned_data()
+    # Unpack aligned data (10 items - includes IR)
+    prices, returns, features, vix, sma_200, above_sma, raw_mom, rs, vols, ir = dm.get_aligned_data()
     categories = dm.get_asset_categories()
 
     print(f"      Period: {prices.index[0].date()} to {prices.index[-1].date()}")
     print(f"      Assets: {', '.join(dm.all_tickers)}")
+    print(f"      Features: {', '.join(features.columns)}")
     print()
 
     # 2. Model Training
-    print("[2/6] Training adaptive regime classifier...")
+    print("[2/6] Training regularized regime classifier...")
+    print(f"      Regularization: max_depth=4, min_samples_leaf=100, ccp_alpha=0.01")
     classifier = AdaptiveRegimeClassifier(config)
     ml_probs = classifier.walk_forward_train(features, returns['SPY'])
     print()
 
     # 3. Optimizer Initialization
-    print("[3/6] Initializing Diverse Titan optimizer...")
-    optimizer = DiverseTitanOptimizer(dm.all_tickers, categories, config)
+    print("[3/6] Initializing Alpha Dominator optimizer...")
+    print(f"      IR Threshold: {config.ir_threshold}")
+    print(f"      Growth Anchor (QQQ+XLK min): {config.min_growth_anchor:.0%}")
+    print(f"      Gold Cap: {config.gold_cap_risk_on:.0%}")
+    optimizer = AlphaDominatorOptimizer(dm.all_tickers, categories, config)
 
     # 4. Backtest Execution
     print("[4/6] Running backtest with adaptive rebalancing...")
     engine = BacktestEngine(config)
     results = engine.run(
-        prices, returns, ml_probs, sma_200, above_sma, raw_mom, rs, vols,
+        prices, returns, ml_probs, sma_200, above_sma, raw_mom, rs, vols, ir,
         classifier, optimizer
     )
 
@@ -1374,7 +1555,7 @@ def main():
     engine.plot_allocation_history()
     engine.plot_regime_analysis(results, prices, sma_200)
     classifier.plot_shap_summary()
-    classifier.plot_validation_curves()  # New health dashboard
+    classifier.plot_validation_curves()  # Model Health Dashboard
 
     # 6. Monte Carlo
     print("[6/6] Running Monte Carlo simulation...")
@@ -1389,7 +1570,7 @@ def main():
 
     # --- FINAL ALLOCATION RECEIPT ---
     print("\n" + "=" * 85)
-    print("FINAL ALLOCATION RECEIPT")
+    print("FINAL ALLOCATION RECEIPT - THE ALPHA DOMINATOR v10.0")
     print("=" * 85)
     print(f"Date:   {results.index[-1].date()}")
     print(f"Regime: {results['Regime'].iloc[-1]} | ML Prob: {results['ML_Prob'].iloc[-1]:.1%}")
@@ -1404,14 +1585,24 @@ def main():
         status = "✓ GOOD" if eff_n >= config.min_effective_n else "✗ LOW"
         print(f"DIVERSITY SCORE (Effective N): {eff_n:.2f} {status}")
         print(f"Target: {config.min_effective_n:.1f}+")
+
+        # Growth Anchor status
+        growth_weight = diag.get('growth_anchor_weight', 0)
+        growth_status = "✓ MET" if growth_weight >= config.min_growth_anchor else "✗ BELOW"
+        print(f"GROWTH ANCHOR (QQQ+XLK): {growth_weight:.1%} {growth_status} (Min: {config.min_growth_anchor:.0%})")
+
+        # Gold Cap status
+        gold_weight = diag.get('gold_weight', 0)
+        gold_status = "✓ OK" if gold_weight <= config.gold_cap_risk_on else "✗ OVER"
+        print(f"GOLD CAP: {gold_weight:.1%} {gold_status} (Max: {config.gold_cap_risk_on:.0%})")
     print()
 
     print("-" * 85)
-    print(f"{'Asset':<8} {'Weight':>10} {'RS Score':>10} {'Trend':>10} {'Risk Contrib':>14} {'Status':<10}")
+    print(f"{'Asset':<8} {'Weight':>10} {'IR_Score':>10} {'Trend':>10} {'Risk Contrib':>14} {'Status':<10}")
     print("-" * 85)
 
-    # Get Final RS Scores and Risk Contributions
-    final_rs_scores = engine.final_rs
+    # Get Final IR Scores and Risk Contributions
+    final_ir_scores = engine.final_ir
     pctr = diag.get('pctr', {}) if diag else {}
 
     # Sort positions by weight
@@ -1427,23 +1618,29 @@ def main():
             is_above = above_sma.iloc[-1].get(asset, False)
             trend_str = "↑ ABOVE" if is_above else "↓ BELOW"
 
-            # RS Score
-            rs_val = final_rs_scores.get(asset, 0.0)
+            # IR Score (Information Ratio)
+            ir_val = final_ir_scores.get(asset, 0.0)
 
             # Risk Contribution
             risk_val = pctr.get(asset, 0.0)
 
             # Conviction Status
-            if weight > 0.15:
+            if asset in ['QQQ', 'XLK']:
+                status = "★ ANCHOR"
+            elif weight > 0.15:
                 status = "★ CORE"
             else:
                 status = "• HOLD"
 
-            print(f"{asset:<8} {weight:>9.1%} {rs_val:>10.3f} {trend_str:>10} {risk_val:>13.1%} {status:<10}")
+            print(f"{asset:<8} {weight:>9.1%} {ir_val:>10.3f} {trend_str:>10} {risk_val:>13.1%} {status:<10}")
 
     print("-" * 85)
     print(f"{'TOTAL':<8} {sum(engine.final_weights):>9.1%}")
     print("=" * 85)
+
+    # Model Stability Status
+    model_stability = getattr(classifier, 'model_stability', 'UNKNOWN')
+    print(f"\nModel Stability: [{model_stability}]")
     print("\nEXECUTION COMPLETE.")
 
 

@@ -280,12 +280,12 @@ class AdaptiveRegimeClassifier:
         # - n_estimators=150: More trees for stable ensemble predictions.
         # - ccp_alpha=0.01: Stronger cost-complexity pruning to reduce overfitting.
         self.model = RandomForestClassifier(
-            n_estimators=150,
-            max_depth=4,  # Increased from 3 to capture feature interactions
-            min_samples_leaf=400,  # CRITICAL FIX: Increased from 100. 400 groups 2022 with 2008.
-            min_samples_split=200,  # Doubled to require more samples for splits
+            n_estimators=200,
+            max_depth=5,  # Increased from 3 to capture feature interactions
+            min_samples_leaf=150,  # CRITICAL FIX: Increased from 100. 400 groups 2022 with 2008.
+            min_samples_split=300,  # Doubled to require more samples for splits
             max_features='sqrt',
-            ccp_alpha=0.01,  # Increased pruning to prevent overfitting
+            ccp_alpha=0.001,  # Increased pruning to prevent overfitting
             bootstrap=True,
             oob_score=True,
             random_state=42,

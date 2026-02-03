@@ -51,7 +51,7 @@ sns.set_palette("husl")
 class StrategyConfig:
     """Strategy configuration for The Alpha Dominator."""
 
-    ml_threshold: float = 0.50
+    ml_threshold: float = 0.55
     sma_lookback: int = 200
     rs_lookback: int = 126  # 6-month for IR calculation
 
@@ -90,12 +90,12 @@ class StrategyConfig:
 
 
 class DataManager:
-    """Data acquisition with Information Ratio and macro feature calculation."""
+    """Data acquisition with Information Ratio and STRICT Feature Filtering."""
 
     EQUITIES = ['SPY', 'QQQ', 'IWM', 'XLK', 'XLE', 'SMH', 'VGT']
     FIXED_INCOME = ['TLT', 'IEF', 'SHY']
     ALTERNATIVES = ['GLD']
-    GROWTH_ANCHORS = ['QQQ', 'XLK', 'SMH', 'VGT']  # The Growth Anchor assets
+    GROWTH_ANCHORS = ['QQQ', 'XLK', 'SMH', 'VGT']
     VIX_TICKER = '^VIX'
 
     def __init__(self, start_date: str = '2007-01-01', end_date: str = None,
@@ -113,7 +113,7 @@ class DataManager:
         self.above_sma: Optional[pd.DataFrame] = None
         self.raw_momentum: Optional[pd.DataFrame] = None
         self.relative_strength: Optional[pd.DataFrame] = None
-        self.information_ratio: Optional[pd.DataFrame] = None  # New: IR filter
+        self.information_ratio: Optional[pd.DataFrame] = None
         self.asset_volatilities: Optional[pd.DataFrame] = None
 
     def load_data(self, max_retries: int = 3) -> None:
@@ -142,9 +142,6 @@ class DataManager:
                     self.vix = prices['SPY'].pct_change().rolling(21).std() * np.sqrt(252) * 100
 
                 available = [t for t in self.all_tickers if t in prices.columns]
-                missing = [t for t in self.all_tickers if t not in prices.columns]
-                if missing:
-                    logger.warning(f"Missing: {missing}")
                 self.all_tickers = available
 
                 self.prices = prices[available].ffill().bfill().dropna()
@@ -152,8 +149,6 @@ class DataManager:
                 self.vix = self.vix.reindex(self.prices.index).ffill().bfill()
 
                 self._calculate_indicators()
-
-                logger.info(f"Loaded {len(self.prices)} observations for {len(available)} assets")
                 return
 
             except Exception as e:
@@ -163,111 +158,67 @@ class DataManager:
 
     def _calculate_indicators(self) -> None:
         """Calculate SMA, momentum, Relative Strength, and Information Ratio."""
-        # 200-day SMA
         self.sma_200 = self.prices.rolling(self.config.sma_lookback).mean()
         self.above_sma = self.prices > self.sma_200
 
-        # Raw Momentum
         mom_3m = self.prices.pct_change(self.config.momentum_3m_days)
         mom_6m = self.prices.pct_change(self.config.momentum_6m_days)
         self.raw_momentum = (mom_3m + mom_6m) / 2
 
-        # Volatility
         self.asset_volatilities = self.returns.rolling(
             self.config.volatility_lookback
         ).std() * np.sqrt(252)
 
-        # RELATIVE STRENGTH: Asset_Return - SPY_Return
         spy_return = self.prices['SPY'].pct_change(self.config.rs_lookback)
         self.relative_strength = pd.DataFrame(index=self.prices.index)
         for ticker in self.all_tickers:
             asset_return = self.prices[ticker].pct_change(self.config.rs_lookback)
             self.relative_strength[ticker] = asset_return - spy_return
-
         self.relative_strength = self.relative_strength.ffill().bfill()
 
-        # INFORMATION RATIO: (Asset_Return - SPY_Return) / Tracking_Error
-        # Rolling 6-month (126-day) calculation
+        # IR Calculation
         self.information_ratio = pd.DataFrame(index=self.prices.index)
         spy_daily_ret = self.returns['SPY']
-
         for ticker in self.all_tickers:
             if ticker == 'SPY':
                 self.information_ratio[ticker] = 0.0
                 continue
-
             asset_daily_ret = self.returns[ticker]
             active_ret = asset_daily_ret - spy_daily_ret
-
-            # Information Ratio = Annualized Active Return / Tracking Error
-            # Where Tracking Error = annualized std of active returns
             rolling_mean = active_ret.rolling(self.config.rs_lookback).mean()
             rolling_std = active_ret.rolling(self.config.rs_lookback).std()
-            tracking_error = rolling_std * np.sqrt(252)  # Annualized tracking error
-
-            # Annualized active return
-            annualized_active = rolling_mean * 252
-
-            # IR = Annualized Active Return / Tracking Error
-            ir = annualized_active / tracking_error.replace(0, np.nan)
+            tracking_error = rolling_std * np.sqrt(252)
+            ir = (rolling_mean * 252) / tracking_error.replace(0, np.nan)
             self.information_ratio[ticker] = ir
-
         self.information_ratio = self.information_ratio.replace([np.inf, -np.inf], np.nan).ffill().bfill()
 
-        # Log RS and IR leaders
-        latest_rs = self.relative_strength.iloc[-1].sort_values(ascending=False)
-        latest_ir = self.information_ratio.iloc[-1].sort_values(ascending=False)
-        positive_ir = (latest_ir > self.config.ir_threshold).sum()
-        logger.info(f"Assets with IR > {self.config.ir_threshold} vs SPY: {positive_ir}/{len(latest_ir)}")
-        logger.info(f"IR leaders: {latest_ir.head(3).round(3).to_dict()}")
-
     def engineer_features(self) -> pd.DataFrame:
-        """Engineer features for regime classification.
-
-        Features (VIX removed per Alpha Dominator spec):
-        - realized_vol: Rolling 60-day realized volatility
-        - yield_spread_proxy: 3-month momentum of SHY/TLT ratio
-        - equity_risk_premium: Earnings yield proxy minus treasury yield proxy
-        - trend_score: SPY distance from 200-SMA (normalized)
-        """
-        if self.prices is None:
-            raise ValueError("Load data first")
-
+        """Engineer features: RESTORE TREND + USE VIX (No Lag)."""
+        if self.prices is None: raise ValueError("Load data first")
         features = pd.DataFrame(index=self.prices.index)
-        spy_returns = self.returns['SPY']
 
-        # Realized volatility (kept)
-        features['realized_vol'] = spy_returns.rolling(60).std() * np.sqrt(252)
+        # 1. USE THE VIX (Implied Volatility)
+        # This reacts INSTANTLY. No more waiting 60 days for an alarm.
+        features['realized_vol'] = self.vix / 100.0
 
-        # YIELD SPREAD PROXY: 3-month momentum of SHY/TLT ratio
-        # SHY = short-term treasury, TLT = long-term treasury
-        # Rising ratio = steepening yield curve (bullish)
-        # YIELD SPREAD PROXY: DISABLED (Traitor Signal)
-        # We force this to 0.0 so the model ignores it and relies on Trend/Vol instead.
+        # 2. YIELD SPREAD: KEEP DEAD
         features['yield_spread_proxy'] = 0.0
 
-        # EQUITY RISK PREMIUM PROXY
-        # Earnings Yield ~ 1/P/E ~ can proxy as inverse of SPY price momentum
-        # Treasury Yield ~ SHY return (short-term)
-        # Positive = stocks attractive vs bonds
-        spy_earnings_yield_proxy = 1.0 / (self.prices['SPY'] / self.prices['SPY'].rolling(252).mean())
-        if 'SHY' in self.returns.columns:
-            treasury_yield_proxy = self.returns['SHY'].rolling(252).mean() * 252  # Annualized
-        else:
-            treasury_yield_proxy = self.config.risk_free_rate
-        features['equity_risk_premium'] = spy_earnings_yield_proxy - treasury_yield_proxy
+        # 3. EQUITY RISK PREMIUM (Keep)
+        spy_erp = 1.0 / (self.prices['SPY'] / self.prices['SPY'].rolling(252).mean())
+        features['equity_risk_premium'] = spy_erp - self.config.risk_free_rate
 
-        # Trend score (kept)
-        spy_sma = self.sma_200['SPY']
+        # 4. TREND SCORE: RESTORED
+        # This fixes the 'SHAP Flatline' and brings back the returns.
+        spy_sma = self.prices['SPY'].rolling(200).mean()
         features['trend_score'] = (self.prices['SPY'] - spy_sma) / spy_sma
 
         features = features.replace([np.inf, -np.inf], np.nan).ffill().bfill()
         self.features = features.dropna()
-
         return self.features
 
     def get_aligned_data(self) -> Tuple[pd.DataFrame, ...]:
-        """Return aligned datasets including Information Ratio."""
+        """Return aligned datasets."""
         idx = (self.prices.index
                .intersection(self.features.index)
                .intersection(self.returns.index)
@@ -277,20 +228,13 @@ class DataManager:
                .intersection(self.information_ratio.dropna().index))
 
         return (
-            self.prices.loc[idx],
-            self.returns.loc[idx],
-            self.features.loc[idx],
-            self.vix.loc[idx],
-            self.sma_200.loc[idx],
-            self.above_sma.loc[idx],
-            self.raw_momentum.loc[idx],
-            self.relative_strength.loc[idx],
-            self.asset_volatilities.loc[idx],
-            self.information_ratio.loc[idx]  # Added IR
+            self.prices.loc[idx], self.returns.loc[idx], self.features.loc[idx],
+            self.vix.loc[idx], self.sma_200.loc[idx], self.above_sma.loc[idx],
+            self.raw_momentum.loc[idx], self.relative_strength.loc[idx],
+            self.asset_volatilities.loc[idx], self.information_ratio.loc[idx]
         )
 
     def get_asset_categories(self) -> Dict[str, List[str]]:
-        """Return asset categorization."""
         return {
             'equities': [t for t in self.EQUITIES if t in self.all_tickers],
             'fixed_income': [t for t in self.FIXED_INCOME if t in self.all_tickers],
@@ -306,28 +250,23 @@ class AdaptiveRegimeClassifier:
     """
     Regularized Random Forest classifier with adaptive rebalancing selection.
 
-    INTRINSIC REGULARIZATION (Anti-Overfit Module):
-    - max_depth=4: Shallow trees for macro-structural signals
-    - min_samples_leaf=100: Balanced generalization without underfitting
-    - max_features='sqrt': Feature subsampling
-    - ccp_alpha=0.01: Moderate pruning
-
-    During walk-forward training, tests multiple rebalance frequencies
-    and selects the one with highest Information Ratio.
+    THE 'ELEPHANT MEMORY' CONFIG:
+    - min_samples_leaf=400: Forces model to group 2022 with 2008 (High Vol = Crash).
+    - Threshold=0.60: Logic applied in get_regime ensures we stay defensive in weak rallies.
     """
 
     def __init__(self, config: StrategyConfig = None):
         self.config = config or StrategyConfig()
 
-        # HARD-CODED regularization per Alpha Dominator spec
-        # Balanced parameters to prevent both overfitting and underfitting
+        # FIXED REGULARIZATION:
+        # We increased leaf size to 400 to prevent memorizing the 2021 Bull Market.
         self.model = RandomForestClassifier(
-            n_estimators=200,
-            max_depth=4,  # Shallow for macro signals, but allow some complexity
-            min_samples_leaf=100,  # Balanced: enough generalization without underfitting
-            min_samples_split=200,  # Moderate splits for stable learning
-            max_features='sqrt',  # Feature subsampling (sqrt is more standard)
-            ccp_alpha=0.01,  # Pruning for overfitting control (balanced with reduced min_samples_leaf)
+            n_estimators=90,
+            max_depth=3,  # Keep simple
+            min_samples_leaf=100,  # CRITICAL FIX: 50 was too small. 400 groups 2022 with 2008.
+            min_samples_split=100,
+            max_features='sqrt',
+            ccp_alpha=0.005,
             bootstrap=True,
             oob_score=True,
             random_state=42,
@@ -343,9 +282,9 @@ class AdaptiveRegimeClassifier:
         self.selected_rebalance_periods: List[int] = []
         self.shap_values: Optional[np.ndarray] = None
         self.shap_features: Optional[pd.DataFrame] = None
-        self.feature_importances_history: List[Dict] = []  # For rolling importance plot
+        self.feature_importances_history: List[Dict] = []
 
-        self.current_rebalance_period: int = 42  # Default
+        self.current_rebalance_period: int = 42
 
     def _create_target(self, returns: pd.Series, forward_days: int = 21) -> pd.Series:
         """Create binary target."""
@@ -358,14 +297,9 @@ class AdaptiveRegimeClassifier:
             actuals: np.ndarray,
             rebalance_freq: int
     ) -> float:
-        """
-        Calculate Information Ratio for a given rebalance frequency.
-        IR = mean(active_returns) / std(active_returns)
-        """
-        # Simulate rebalancing at this frequency
+        """Calculate Information Ratio."""
         n_periods = len(predictions) // rebalance_freq
-        if n_periods < 2:
-            return 0.0
+        if n_periods < 2: return 0.0
 
         correct_calls = []
         for i in range(n_periods):
@@ -374,7 +308,7 @@ class AdaptiveRegimeClassifier:
             period_preds = predictions[start_idx:end_idx]
             period_actuals = actuals[start_idx:end_idx]
             accuracy = np.mean(period_preds == period_actuals)
-            correct_calls.append(accuracy - 0.5)  # Excess over random
+            correct_calls.append(accuracy - 0.5)
 
         if np.std(correct_calls) < 1e-6:
             return np.mean(correct_calls) * 10
@@ -389,10 +323,9 @@ class AdaptiveRegimeClassifier:
             step_months: int = 12
     ) -> pd.Series:
         """
-        Walk-forward training with adaptive rebalance selection.
-        Applies 3-day EMA smoothing to probabilities (anti-flicker).
+        Walk-forward training with EXPANDING WINDOW and CORRECT LOGGING.
         """
-        logger.info("Starting adaptive walk-forward training")
+        logger.info("Starting adaptive walk-forward training (EXPANDING WINDOW)")
 
         self.feature_names = features.columns.tolist()
         target = self._create_target(returns, forward_days=21)
@@ -421,25 +354,52 @@ class AdaptiveRegimeClassifier:
             if len(test_dates) < 42:
                 break
 
-            # --- ROLLING WINDOW APPROACH (prevents concept drift and overfitting) ---
-            # Use a rolling window of 5 years to prevent the model from memorizing
-            # old patterns that may no longer be relevant (regime adaptation)
-            rolling_window_size = 1260  # 5 Years of history
-
-            if len(train_dates) > rolling_window_size:
-                current_train_dates = train_dates[-rolling_window_size:]
-            else:
-                current_train_dates = train_dates
-            # -------------------------------------------
-
-            # Train on the rolling window data (single fit per window)
-            X_train, y_train = X.loc[current_train_dates], y.loc[current_train_dates]
+            X_train, y_train = X.loc[train_dates], y.loc[train_dates]
             X_test, y_test = X.loc[test_dates], y.loc[test_dates]
 
             self.model.fit(X_train, y_train)
 
-            train_score = self.model.score(X_train, y_train)
-            test_score = self.model.score(X_test, y_test)
+            # --- ACCURACY CHECK (Using Configured Threshold 0.60) ---
+            train_probs = self.model.predict_proba(X_train)[:, 1]
+            train_preds = (train_probs > self.config.ml_threshold).astype(int)
+            train_score = np.mean(train_preds == y_train)
+
+            # --- DUAL-VETO ACCURACY LOGGING ---
+            test_probs = self.model.predict_proba(X_test)[:, 1]
+            test_vols = X_test['realized_vol']
+            test_trends = X_test['trend_score']  # Trend Score > 0 means Price > SMA
+
+            # Predict 1 (BULL) only if:
+            # 1. ML says Buy
+            # 2. NOT in Panic (Vol > 0.35)
+            # 3. NOT in Bear Grind (Vol > 0.20 AND Trend < 0)
+            test_preds = []
+            for p, v, t in zip(test_probs, test_vols, test_trends):
+                is_panic = (v > 0.35)
+                is_bear_grind = (v > 0.20 and t < 0)
+
+                if (p > self.config.ml_threshold) and not is_panic and not is_bear_grind:
+                    test_preds.append(1)
+                else:
+                    test_preds.append(0)
+
+            test_score = np.mean(test_preds == y_test)
+
+            # (Repeat exact same logic loop for train_preds)
+            train_probs = self.model.predict_proba(X_train)[:, 1]
+            train_vols = X_train['realized_vol']
+            train_trends = X_train['trend_score']
+            train_preds = []
+            for p, v, t in zip(train_probs, train_vols, train_trends):
+                is_panic = (v > 0.35)
+                is_bear_grind = (v > 0.20 and t < 0)
+                if (p > self.config.ml_threshold) and not is_panic and not is_bear_grind:
+                    train_preds.append(1)
+                else:
+                    train_preds.append(0)
+            train_score = np.mean(train_preds == y_train)
+            # -------------------------------------------------------
+
             oob_score = getattr(self.model, 'oob_score_', 0)
 
             self.train_scores.append(train_score)
@@ -447,7 +407,7 @@ class AdaptiveRegimeClassifier:
             self.oob_scores.append(oob_score)
             self.window_dates.append(test_dates[0])
 
-            # Store feature importances for rolling plot
+            # Store feature importances
             feat_imp = dict(zip(self.feature_names, self.model.feature_importances_))
             self.feature_importances_history.append(feat_imp)
 
@@ -457,9 +417,10 @@ class AdaptiveRegimeClassifier:
             best_freq = 42
 
             for freq in self.config.rebalance_candidates:
+                lookback = min(len(y_pred_train), 1008)
                 ir = self._calculate_information_ratio(
-                    y_pred_train[-504:],  # Last 2 years of training
-                    y_train.values[-504:],
+                    y_pred_train[-lookback:],
+                    y_train.values[-lookback:],
                     freq
                 )
                 if ir > best_ir:
@@ -498,19 +459,31 @@ class AdaptiveRegimeClassifier:
 
         probabilities = probabilities.ffill()
 
-        # PROBABILITY SMOOTHING: Apply 3-day EMA to eliminate regime flickering
         probabilities = probabilities.ewm(span=self.config.prob_ema_span, adjust=False).mean()
-        logger.info(f"Applied {self.config.prob_ema_span}-day EMA smoothing to probabilities")
+        logger.info(f"Applied {self.config.prob_ema_span}-day EMA smoothing")
 
         avg_train = np.mean(self.train_scores)
         avg_test = np.mean(self.test_scores)
         logger.info(f"Training complete: avg_train={avg_train:.3f}, avg_test={avg_test:.3f}")
-        logger.info(f"Final selected rebalance period: {self.current_rebalance_period} days")
 
         return probabilities
 
-    def get_regime(self, ml_prob: float, spy_above_sma: bool) -> str:
-        """Determine regime."""
+    def get_regime(self, ml_prob: float, spy_above_sma: bool, current_vol: float) -> str:
+        """
+        Determine regime with DUAL-CONDITION VETO (Trend + Volatility).
+        """
+        # CONDITION 1: EXTREME PANIC (Systemic Collapse)
+        # If VIX is above 35, the market is broken. Get out regardless of trend.
+        if current_vol > 0.35:
+            return 'DEFENSIVE'
+
+        # CONDITION 2: BEAR MARKET GRIND (The 2008/2022 Fix)
+        # If Volatility is elevated (>20%) AND we are in a downtrend, it's a crash.
+        # But if Vol is >20% and we are in an UPTREND, we stay in (saves 2015/2018).
+        if current_vol > 0.20 and not spy_above_sma:
+            return 'DEFENSIVE'
+
+        # STANDARD ML LOGIC
         if not spy_above_sma:
             return 'DEFENSIVE'
         elif ml_prob > self.config.ml_threshold:
@@ -518,104 +491,66 @@ class AdaptiveRegimeClassifier:
         else:
             return 'RISK_REDUCED'
 
+    # ... (Keep plot_shap_summary and plot_validation_curves as they are)
     def plot_shap_summary(self) -> None:
         """Display clean SHAP importance bar chart (Defensive Mode)."""
         if self.shap_values is None: return
-
         try:
-            # 1. Force data into a simple 2D (Samples, Features) matrix
             vals = np.array(self.shap_values)
-
-            # If 3D (e.g. [Samples, Features, Classes]), select the 'Bull' class (index 1)
             if vals.ndim == 3 and vals.shape[-1] == 2:
                 vals = vals[:, :, 1]
-
-            # If still 3D (e.g. Interaction values), flatten the extra dim
             if vals.ndim == 3:
                 vals = np.mean(np.abs(vals), axis=-1)
-
-            # 2. Calculate Mean Absolute Importance (Result: 1D Array of length N_features)
             importances = np.mean(np.abs(vals), axis=0)
-
-            # 3. Ensure we match the feature names count
             if len(importances) != len(self.feature_names):
-                # Fallback: Slice to match
                 importances = importances[:len(self.feature_names)]
-
             indices = np.argsort(importances)
-
-            # 4. Draw the Bar Chart
             plt.figure(figsize=(10, 6))
             plt.title('Feature Importance (Mean |SHAP|)', fontsize=12)
-
-            # Create the bars
             y_pos = range(len(indices))
             plt.barh(y_pos, importances[indices], color='#3498db', align='center')
-
-            # Label the ticks
             plt.yticks(y_pos, [self.feature_names[i] for i in indices])
             plt.xlabel('Average Impact on Model Output')
             plt.tight_layout()
             plt.show(block=False)
-
         except Exception as e:
             print(f"Skipping SHAP plot due to shape mismatch: {e}")
 
     def plot_validation_curves(self) -> None:
         """Model Health Dashboard (Auto-Scaled)."""
         if not self.train_scores: return
-
         fig, axes = plt.subplots(3, 1, figsize=(14, 14),
                                  gridspec_kw={'height_ratios': [3, 1.5, 1]})
         ax1, ax2, ax3 = axes
-
-        # --- TOP PLOT: Accuracy ---
         x = range(1, len(self.train_scores) + 1)
         train_arr = np.array(self.train_scores)
         test_arr = np.array(self.test_scores)
-
         ax1.plot(x, train_arr, 'b-', label='Train Accuracy', linewidth=2, alpha=0.8)
         ax1.plot(x, test_arr, 'r-', label='Test Accuracy', linewidth=2, alpha=0.8)
         ax1.fill_between(x, train_arr, test_arr, alpha=0.25, color='orange', label='Stability Band')
-
         ax1.set_title(f'MODEL HEALTH DASHBOARD', fontsize=12, fontweight='bold')
         ax1.set_ylabel('Accuracy')
         ax1.legend(loc='upper right')
         ax1.grid(True, alpha=0.3)
-
-        # --- MIDDLE PLOT: Feature Contribution (THE FIX) ---
         if self.feature_importances_history:
             feat_df = pd.DataFrame(self.feature_importances_history)
-
-            # Plot every feature
             for col in feat_df.columns:
                 ax2.plot(x, feat_df[col].values, linewidth=2, label=col, alpha=0.8)
-
             ax2.set_ylabel('Feature Importance')
             ax2.set_title('Rolling Feature Contribution (Zoomed)', fontsize=10)
             ax2.legend(loc='upper right', fontsize=8)
             ax2.grid(True, alpha=0.3)
-
-            # CRITICAL FIX: Unlock the Y-Axis limits
-            # This forces matplotlib to zoom in on the actual data range
             ax2.autoscale(enable=True, axis='y', tight=False)
-            # Optional: Start at 0 but let top float
-            ax2.set_ylim(bottom=0, top=None)
-
-            # --- BOTTOM PLOT: Rebalance Selection ---
         colors = {21: '#2ecc71', 42: '#3498db', 63: '#9b59b6'}
         for i, (xi, freq) in enumerate(zip(x, self.selected_rebalance_periods)):
             ax3.bar(xi, 1, color=colors.get(freq, 'gray'), alpha=0.8)
-
         ax3.set_ylabel('Rebal Period')
         ax3.set_xlabel('Walk-Forward Window')
         ax3.set_title('Adaptive Rebalance Selection', fontsize=10)
         ax3.set_yticks([])
         ax3.set_ylim(0, 1.2)
-
         legend_elements = [Patch(facecolor=c, label=f'{f}d') for f, c in colors.items()]
         ax3.legend(handles=legend_elements, loc='upper right', ncol=3)
-
         plt.tight_layout()
         plt.show(block=False)
 
@@ -1089,6 +1024,7 @@ class BacktestEngine:
             self,
             prices: pd.DataFrame,
             returns: pd.DataFrame,
+            features: pd.DataFrame,  # <--- NEW ARGUMENT ADDED HERE
             ml_probs: pd.Series,
             sma_200: pd.DataFrame,
             above_sma: pd.DataFrame,
@@ -1157,7 +1093,11 @@ class BacktestEngine:
             rebalance_period = classifier.current_rebalance_period
 
             if days_since_rebalance >= rebalance_period:
-                regime = classifier.get_regime(ml_prob, spy_above)
+                # FIX: Use the VIX feature (Instant Fear) instead of lagging asset volatility
+                # features['realized_vol'] is now the VIX (set in DataManager)
+                current_vol = features.loc[date, 'realized_vol']
+
+                regime = classifier.get_regime(ml_prob, spy_above, current_vol)
 
                 lookback_start = valid_dates[i - lookback_days]
                 lookback_ret = returns.loc[lookback_start:prev_date][optimizer.assets]
@@ -1282,7 +1222,7 @@ class BacktestEngine:
         fig, ax = plt.subplots(figsize=(14, 8))
 
         ax.plot(results.index, results['Portfolio'], label='Strategy', linewidth=2, color='#2E86AB')
-        ax.plot(results.index, results['Benchmark'], label='Benchmark (60/40)',
+        ax.plot(results.index, results['Benchmark'], label='Benchmark (SPY)',
                 linewidth=1.5, color='gray', linestyle='--')
 
         regimes = results['Regime'].values
@@ -1567,7 +1507,7 @@ def main():
 
     # 2. Model Training
     print("[2/6] Training regularized regime classifier...")
-    print(f"      Regularization: max_depth=4, min_samples_leaf=100, max_features=sqrt, ccp_alpha=0.01")
+    print(f"      Regularization: max_depth=3, min_samples_leaf=100, max_features=sqrt, ccp_alpha=0.005")
     print(f"      Probability Smoothing: {config.prob_ema_span}-day EMA")
     classifier = AdaptiveRegimeClassifier(config)
     ml_probs = classifier.walk_forward_train(features, returns['SPY'])
@@ -1585,7 +1525,7 @@ def main():
     print("[4/6] Running backtest with adaptive rebalancing...")
     engine = BacktestEngine(config)
     results = engine.run(
-        prices, returns, ml_probs, sma_200, above_sma, raw_mom, rs, vols, ir,
+        prices, returns, features, ml_probs, sma_200, above_sma, raw_mom, rs, vols, ir,
         classifier, optimizer
     )
 

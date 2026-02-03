@@ -83,6 +83,15 @@ class StrategyConfig:
     # EMA smoothing for ML probabilities
     prob_ema_span: int = 10  # 10-day EMA for heavy smoothing
 
+    # Model stability thresholds (based on train-test gap analysis)
+    # STABLE: Low avg gap AND low variance in gaps - model generalizes consistently
+    stability_gap_stable: float = 0.05  # Max avg gap for STABLE status
+    stability_std_stable: float = 0.10  # Max gap std for STABLE status
+    # MODERATE: Acceptable gaps and variance - model generalizes reasonably well
+    stability_gap_moderate: float = 0.10  # Max avg gap for MODERATE status
+    stability_std_moderate: float = 0.15  # Max gap std for MODERATE status
+    # UNSTABLE: Above these thresholds - model has generalization issues
+
     # Floating point tolerance for constraint checks
     constraint_tolerance: float = 0.001
 
@@ -315,13 +324,18 @@ class AdaptiveRegimeClassifier:
     def _create_target(self, returns: pd.Series, forward_days: int = 21) -> pd.Series:
         """Create binary target based on cumulative forward returns.
         
-        FIXED: Previous implementation had look-ahead bias issue where shift(-forward_days)
-        followed by rolling(forward_days).sum() created inconsistent labels.
+        Target: Will the sum of returns over the NEXT forward_days period be positive?
         
-        New implementation: Simply look at cumulative return over the next forward_days.
+        At time t, we want to know if sum(returns[t+1:t+forward_days+1]) > 0
+        
+        Implementation:
+        - rolling(forward_days).sum() at index i gives sum(returns[i-forward_days+1:i+1])
+        - shift(-forward_days) moves index i value to index i-forward_days
+        - Result: at index i, we get sum(returns[i+1:i+forward_days+1]) which is exactly what we want
+        
+        This correctly captures forward-looking returns without look-ahead bias at decision point.
         """
-        # Cumulative return over the next forward_days period
-        forward_ret = returns.shift(-1).rolling(forward_days).sum().shift(-forward_days + 1)
+        forward_ret = returns.rolling(forward_days).sum().shift(-forward_days)
         return (forward_ret > 0).astype(int)
 
     def _calculate_information_ratio(
@@ -371,9 +385,6 @@ class AdaptiveRegimeClassifier:
         valid_idx = features.index.intersection(target.dropna().index)
         X = features.loc[valid_idx]
         y = target.loc[valid_idx]
-
-        # Store unscaled features for SHAP and dual-veto logic (these use actual feature values)
-        X_unscaled = X.copy()
 
         probabilities = pd.Series(index=X.index, dtype=float)
         probabilities[:] = np.nan
@@ -460,7 +471,7 @@ class AdaptiveRegimeClassifier:
             sample_n = min(50, len(X_test_scaled))
             sample_idx = np.random.choice(len(X_test_scaled), sample_n, replace=False)
             X_sample_scaled = X_test_scaled.iloc[sample_idx]
-            X_sample_unscaled = X_unscaled.loc[test_dates].iloc[sample_idx]
+            X_sample_unscaled = X_test_raw.iloc[sample_idx]  # Use raw (unscaled) test data
 
             explainer = shap.TreeExplainer(self.model)
             shap_vals = explainer.shap_values(X_sample_scaled)
@@ -491,13 +502,17 @@ class AdaptiveRegimeClassifier:
         avg_gap = avg_train - avg_test
         gap_std = np.std(np.array(self.train_scores) - np.array(self.test_scores))
         
-        # Calculate model stability
-        # STABLE: avg gap < 0.05 and gap_std < 0.10
-        # MODERATE: avg gap < 0.10 and gap_std < 0.15
-        # UNSTABLE: otherwise
-        if abs(avg_gap) < 0.05 and gap_std < 0.10:
+        # Calculate model stability using configurable thresholds
+        # Note: Negative gap (test > train) is suspicious and indicates potential data leakage
+        # Only small POSITIVE gaps with low variance indicate truly stable generalization
+        if avg_gap < 0:
+            # Negative gap: test accuracy > train accuracy is unusual, flag as unstable
+            self.model_stability = "UNSTABLE (test > train)"
+        elif (avg_gap < self.config.stability_gap_stable and 
+              gap_std < self.config.stability_std_stable):
             self.model_stability = "STABLE"
-        elif abs(avg_gap) < 0.10 and gap_std < 0.15:
+        elif (avg_gap < self.config.stability_gap_moderate and 
+              gap_std < self.config.stability_std_moderate):
             self.model_stability = "MODERATE"
         else:
             self.model_stability = "UNSTABLE"

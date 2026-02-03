@@ -62,6 +62,7 @@ class StrategyConfig:
 
     entropy_lambda: float = 0.15  # Shannon Entropy coefficient
     min_effective_n: float = 3.0
+    growth_anchor_penalty: float = 50.0  # High-priority penalty multiplier for Growth Anchor constraint
 
     # Adaptive rebalancing candidates
     rebalance_candidates: Tuple[int, ...] = (21, 42, 63)
@@ -75,6 +76,9 @@ class StrategyConfig:
 
     # EMA smoothing for ML probabilities
     prob_ema_span: int = 3  # 3-day EMA
+
+    # UI colors
+    alert_background_color: str = '#FFCCCC'  # Light Red for health dashboard alerts
 
 
 class DataManager:
@@ -187,8 +191,8 @@ class DataManager:
             asset_daily_ret = self.returns[ticker]
             active_ret = asset_daily_ret - spy_daily_ret
 
-            # Rolling IR = mean(active_ret) * sqrt(252) / std(active_ret) * sqrt(252)
-            # Simplified: IR = mean / std * sqrt(252 / lookback)
+            # Information Ratio = Annualized Active Return / Tracking Error
+            # Where Tracking Error = annualized std of active returns
             rolling_mean = active_ret.rolling(self.config.rs_lookback).mean()
             rolling_std = active_ret.rolling(self.config.rs_lookback).std()
             tracking_error = rolling_std * np.sqrt(252)  # Annualized tracking error
@@ -534,7 +538,7 @@ class AdaptiveRegimeClassifier:
 
         # RED ALERT: Change background if unhealthy
         if alert_active:
-            ax1.set_facecolor('#FFCCCC')  # Light Red
+            ax1.set_facecolor(self.config.alert_background_color)
 
         # Main accuracy plot with stability band
         ax1.plot(x, train_arr, 'b-', label='Train Accuracy', linewidth=2, alpha=0.8)
@@ -798,6 +802,7 @@ class AlphaDominatorOptimizer:
         cov_arr = cov.values
         entropy_lambda = self.config.entropy_lambda  # 0.15
         min_growth_anchor = self.config.min_growth_anchor  # 50%
+        growth_anchor_penalty_mult = self.config.growth_anchor_penalty  # High-priority penalty multiplier
 
         # Scale IR scores to positive range for objective
         ir_scaled = np.where(aligned_ir > 0, aligned_ir, 0)
@@ -822,7 +827,7 @@ class AlphaDominatorOptimizer:
 
             # GROWTH ANCHOR: High-priority soft penalty if QQQ+XLK < 50%
             growth_weight = sum(w[idx] for idx in growth_anchor_idx)
-            growth_penalty = max(0, min_growth_anchor - growth_weight) ** 2 * 50.0  # High priority
+            growth_penalty = max(0, min_growth_anchor - growth_weight) ** 2 * growth_anchor_penalty_mult
 
             # Objective: maximize (IR_Score + 0.15*Entropy) - penalties
             return -ir_score - entropy_lambda * norm_entropy + growth_penalty
@@ -1624,8 +1629,8 @@ def main():
             # Risk Contribution
             risk_val = pctr.get(asset, 0.0)
 
-            # Conviction Status
-            if asset in ['QQQ', 'XLK']:
+            # Conviction Status - use centralized GROWTH_ANCHORS constant
+            if asset in DataManager.GROWTH_ANCHORS:
                 status = "★ ANCHOR"
             elif weight > 0.15:
                 status = "★ CORE"

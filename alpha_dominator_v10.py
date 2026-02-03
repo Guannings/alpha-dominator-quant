@@ -66,8 +66,8 @@ class StrategyConfig:
 
     entropy_lambda: float = 0.15  # Shannon Entropy coefficient
     min_effective_n: float = 3.0
-    growth_anchor_penalty: float = 50.0  # High-priority penalty multiplier for Growth Anchor constraint
-    turnover_penalty: float = 500.0  # The Turnover Brake penalty multiplier
+    growth_anchor_penalty: float = 500.0  # High-priority penalty multiplier for Growth Anchor constraint
+    turnover_penalty: float = 50.0  # The Turnover Brake penalty multiplier
 
     # Adaptive rebalancing candidates
     rebalance_candidates: Tuple[int, ...] = (21, 42, 63)
@@ -731,9 +731,12 @@ class AlphaDominatorOptimizer:
             self.current_weights = weights.copy()
             return weights, True, method, diagnostics
         else:
-            weights = self._equal_eligible(eligible_mask)
+            # Use growth anchor tilt fallback instead of equal weight
+            weights = self._growth_anchor_tilt(eligible_mask)
+            if weights is None:
+                weights = self._safe_fallback(regime)
             self.current_weights = weights.copy()
-            return weights, False, "equal_fallback", self._calculate_diagnostics(weights, cov, information_ratio)
+            return weights, False, "growth_tilt_fallback", self._calculate_diagnostics(weights, cov, information_ratio)
 
     def _get_eligible_mask(
             self,
@@ -984,24 +987,41 @@ class AlphaDominatorOptimizer:
         return weights
 
     def _growth_anchor_tilt(self, eligible_mask: np.ndarray) -> Optional[np.ndarray]:
-        """Growth anchor tilt: favor QQQ and XLK."""
+        """
+        Growth anchor tilt: Set 60% total weight to Growth Anchors (QQQ, XLK, SMH, VGT)
+        and distribute remaining 40% among other eligible assets.
+        """
         if eligible_mask.sum() == 0:
             return None
 
         weights = np.zeros(self.n_assets)
-        n = eligible_mask.sum()
-        indices = np.where(eligible_mask)[0]
 
-        # Base equal weight
-        for idx in indices:
-            weights[idx] = 1.0 / n
+        # Convert to set for O(1) lookup
+        growth_anchor_set = set(self.growth_anchor_idx)
 
-        # Boost growth anchors
-        for idx in self.growth_anchor_idx:
-            if eligible_mask[idx]:
-                weights[idx] *= 2.0  # Double weight for QQQ, XLK
+        # Identify eligible growth anchors and other eligible assets
+        eligible_anchor_idx = [idx for idx in self.growth_anchor_idx if eligible_mask[idx]]
+        eligible_other_idx = [idx for idx in np.where(eligible_mask)[0] if idx not in growth_anchor_set]
 
-        # Normalize
+        # 60% Floor for Growth Anchors
+        if eligible_anchor_idx:
+            anchor_weight_each = self.config.min_growth_anchor / len(eligible_anchor_idx)
+            for idx in eligible_anchor_idx:
+                weights[idx] = anchor_weight_each
+
+        # Distribute remaining 40% among other eligible assets
+        remaining_weight = 1.0 - self.config.min_growth_anchor
+        if eligible_other_idx:
+            other_weight_each = remaining_weight / len(eligible_other_idx)
+            for idx in eligible_other_idx:
+                weights[idx] = other_weight_each
+        elif eligible_anchor_idx:
+            # If no other eligible assets, give remaining weight to anchors
+            extra_each = remaining_weight / len(eligible_anchor_idx)
+            for idx in eligible_anchor_idx:
+                weights[idx] += extra_each
+
+        # Normalize to ensure sum is exactly 1.0
         if weights.sum() > 0:
             weights = weights / weights.sum()
 
@@ -1569,7 +1589,7 @@ def main():
     print(f"      IR Threshold: {config.ir_threshold}")
     print(f"      Growth Anchor (QQQ+XLK+SMH+VGT min): {config.min_growth_anchor:.0%}")
     print(f"      Gold Cap: {config.gold_cap_risk_on:.0%}")
-    print(f"      Turnover Brake: 500 penalty multiplier")
+    print(f"      Turnover Brake: {config.turnover_penalty:.0f} penalty multiplier")
     optimizer = AlphaDominatorOptimizer(dm.all_tickers, categories, config)
 
     # 4. Backtest Execution

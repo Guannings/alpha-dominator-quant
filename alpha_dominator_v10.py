@@ -8,7 +8,7 @@ Key innovations:
 1. Information Ratio Filter: Only assets with IR > 0.5 vs SPY are eligible in RISK_ON
 2. Growth Anchor: QQQ + XLK + SMH + VGT minimum 60% weight during RISK_ON
 3. Gold capped at 5% in Bull markets
-4. Regularized Random Forest (max_depth=3, min_samples_leaf=150, ccp_alpha=0.015)
+4. Regularized Random Forest (max_depth=4, min_samples_leaf=100, ccp_alpha=0.01)
 5. Yield Spread & Equity Risk Premium features (VIX removed)
 6. 10-day EMA probability smoothing (heavy smoothing to prevent regime flickering)
 7. Overfitting health dashboard with stability bands & red alerts
@@ -307,10 +307,10 @@ class AdaptiveRegimeClassifier:
     Regularized Random Forest classifier with adaptive rebalancing selection.
 
     INTRINSIC REGULARIZATION (Anti-Overfit Module):
-    - max_depth=3: Shallow trees for macro-structural signals
-    - min_samples_leaf=150: Forces generalization
-    - max_features='log2': Feature subsampling
-    - ccp_alpha=0.015: Aggressive pruning
+    - max_depth=4: Shallow trees for macro-structural signals
+    - min_samples_leaf=100: Balanced generalization without underfitting
+    - max_features='sqrt': Feature subsampling
+    - ccp_alpha=0.01: Moderate pruning
 
     During walk-forward training, tests multiple rebalance frequencies
     and selects the one with highest Information Ratio.
@@ -320,13 +320,14 @@ class AdaptiveRegimeClassifier:
         self.config = config or StrategyConfig()
 
         # HARD-CODED regularization per Alpha Dominator spec
+        # Balanced parameters to prevent both overfitting and underfitting
         self.model = RandomForestClassifier(
             n_estimators=200,
-            max_depth=3,  # Shallow for macro signals
-            min_samples_leaf=400,  # Force generalization (stronger evidence)
-            min_samples_split=500,  # Conservative splits
-            max_features='log2',  # Feature subsampling
-            ccp_alpha=0.004,  # Aggressive pruning
+            max_depth=4,  # Shallow for macro signals, but allow some complexity
+            min_samples_leaf=100,  # Balanced: enough generalization without underfitting
+            min_samples_split=200,  # Moderate splits for stable learning
+            max_features='sqrt',  # Feature subsampling (sqrt is more standard)
+            ccp_alpha=0.01,  # Pruning for overfitting control (balanced with reduced min_samples_leaf)
             bootstrap=True,
             oob_score=True,
             random_state=42,
@@ -416,16 +417,13 @@ class AdaptiveRegimeClassifier:
             train_dates = dates[:train_end_idx]
             test_end_idx = min(train_end_idx + 252, len(dates))
             test_dates = dates[train_end_idx:test_end_idx]
-            # EXPANDING WINDOW RESTORED (Fixes 2022 Blindness)
-            X_train, y_train = X.loc[train_dates], y.loc[train_dates]
-            X_test, y_test = X.loc[test_dates], y.loc[test_dates]
-
-            self.model.fit(X_train, y_train)
 
             if len(test_dates) < 42:
                 break
 
-            # --- ROLLING WINDOW FIX (Define it HERE) ---
+            # --- ROLLING WINDOW APPROACH (prevents concept drift and overfitting) ---
+            # Use a rolling window of 5 years to prevent the model from memorizing
+            # old patterns that may no longer be relevant (regime adaptation)
             rolling_window_size = 1260  # 5 Years of history
 
             if len(train_dates) > rolling_window_size:
@@ -434,11 +432,10 @@ class AdaptiveRegimeClassifier:
                 current_train_dates = train_dates
             # -------------------------------------------
 
-            # Update to use the NEW 'current_train_dates' variable
+            # Train on the rolling window data (single fit per window)
             X_train, y_train = X.loc[current_train_dates], y.loc[current_train_dates]
             X_test, y_test = X.loc[test_dates], y.loc[test_dates]
 
-            # (The rest of the loop continues as normal...)
             self.model.fit(X_train, y_train)
 
             train_score = self.model.score(X_train, y_train)
@@ -1570,7 +1567,7 @@ def main():
 
     # 2. Model Training
     print("[2/6] Training regularized regime classifier...")
-    print(f"      Regularization: max_depth=3, min_samples_leaf=150, ccp_alpha=0.015")
+    print(f"      Regularization: max_depth=4, min_samples_leaf=100, max_features=sqrt, ccp_alpha=0.01")
     print(f"      Probability Smoothing: {config.prob_ema_span}-day EMA")
     classifier = AdaptiveRegimeClassifier(config)
     ml_probs = classifier.walk_forward_train(features, returns['SPY'])

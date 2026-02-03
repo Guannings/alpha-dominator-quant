@@ -27,6 +27,8 @@ import yfinance as yf
 from scipy.optimize import minimize
 from sklearn.ensemble import RandomForestClassifier
 import shap
+import matplotlib
+matplotlib.use('TkAgg')
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mtick
 from matplotlib.patches import Patch
@@ -509,7 +511,7 @@ class AdaptiveRegimeClassifier:
                           feature_names=self.feature_names, show=False)
         plt.title('Feature Importance (SHAP)', fontsize=12)
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
     def plot_validation_curves(self) -> None:
         """
@@ -620,7 +622,7 @@ class AdaptiveRegimeClassifier:
         ax3.legend(handles=legend_elements, loc='upper right', ncol=3)
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
         # Store stability status for terminal output
         self.model_stability = "STABLE" if status.startswith("✓") else "VOLATILE"
@@ -1264,7 +1266,7 @@ class BacktestEngine:
                 bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
     def plot_allocation_history(self) -> None:
         """Display allocation."""
@@ -1296,7 +1298,7 @@ class BacktestEngine:
         ax2.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
     def plot_regime_analysis(self, results: pd.DataFrame, prices: pd.DataFrame,
                              sma_200: pd.DataFrame) -> None:
@@ -1335,7 +1337,7 @@ class BacktestEngine:
         ax3.legend(handles=legend_elements, loc='upper right')
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
 
 class MonteCarloSimulator:
@@ -1442,7 +1444,7 @@ class MonteCarloSimulator:
         ax.grid(True, alpha=0.3)
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
     def plot_distribution(self) -> None:
         """Display distribution."""
@@ -1486,7 +1488,7 @@ class MonteCarloSimulator:
         ax2.grid(axis='y', alpha=0.3)
 
         plt.tight_layout()
-        plt.show()
+        plt.show(block=False)
 
 
 def main():
@@ -1536,8 +1538,19 @@ def main():
         classifier, optimizer
     )
 
-    # Calculate and print metrics
+    # Calculate metrics (needed for terminal output)
     metrics = engine.calculate_metrics(results)
+
+    # 5. Monte Carlo Calculation
+    print("[5/6] Running Monte Carlo simulation...")
+    mc = MonteCarloSimulator(
+        n_simulations=10000,
+        projection_years=5,
+        risk_free_rate=config.risk_free_rate
+    )
+    mc.run(returns, engine.final_weights, optimizer.assets, results['Portfolio'].iloc[-1])
+
+    # --- PRINT ALL TERMINAL OUTPUT ---
     print()
     print("-" * 65)
     print("BACKTEST RESULTS")
@@ -1552,26 +1565,6 @@ def main():
     print(f"Most Common Rebalance Period: {metrics['optimal_rebalance_period']} days")
     print(f"Total Transaction Costs: ${metrics['total_costs']:,.2f}")
     print(f"Regime Distribution: {metrics['regime_counts']}")
-    print()
-
-    # 5. Visualizations
-    print("[5/6] Generating visualizations (Close plots to continue)...")
-    engine.plot_performance(results)
-    engine.plot_allocation_history()
-    engine.plot_regime_analysis(results, prices, sma_200)
-    classifier.plot_shap_summary()
-    classifier.plot_validation_curves()  # Model Health Dashboard
-
-    # 6. Monte Carlo
-    print("[6/6] Running Monte Carlo simulation...")
-    mc = MonteCarloSimulator(
-        n_simulations=10000,
-        projection_years=5,
-        risk_free_rate=config.risk_free_rate
-    )
-    mc.run(returns, engine.final_weights, optimizer.assets, results['Portfolio'].iloc[-1])
-    mc.plot_paths()
-    mc.plot_distribution()
 
     # --- FINAL ALLOCATION RECEIPT ---
     print("\n" + "=" * 85)
@@ -1647,6 +1640,19 @@ def main():
     model_stability = getattr(classifier, 'model_stability', 'UNKNOWN')
     print(f"\nModel Stability: [{model_stability}]")
     print("\nEXECUTION COMPLETE.")
+
+    # 6. Generate and display all Plots (after terminal output)
+    print("\n[6/6] Generating visualizations...")
+    engine.plot_performance(results)
+    engine.plot_allocation_history()
+    engine.plot_regime_analysis(results, prices, sma_200)
+    classifier.plot_shap_summary()
+    classifier.plot_validation_curves()  # Model Health Dashboard
+    mc.plot_paths()
+    mc.plot_distribution()
+
+    # Keep all plot windows open until manually closed
+    plt.show(block=True)
 
 
 if __name__ == "__main__":

@@ -879,8 +879,8 @@ class BacktestEngine:
         
         # Sniper Score tracking
         self.buy_signals: List[int] = []  # 1 if buy signal, 0 otherwise
-        self.actual_outcomes: List[int] = []  # 1 if market was actually bullish, 0 otherwise
-        self.sniper_score: float = 0.0
+        self.actual_outcomes: List[int] = []  # Date indices for outcome calculation
+        self.sniper_score: Optional[float] = None  # None if undefined (no buy signals)
 
     def run(
             self,
@@ -962,7 +962,6 @@ class BacktestEngine:
                 # Get tlt_momentum and equity_risk_premium for Rate Shock Guard
                 tlt_momentum = features.loc[date, 'tlt_momentum']
                 equity_risk_premium = features.loc[date, 'equity_risk_premium']
-                trend_score = features.loc[date, 'trend_score']
 
                 regime = classifier.get_regime(ml_prob, spy_above, current_vol, tlt_momentum, equity_risk_premium)
 
@@ -992,12 +991,8 @@ class BacktestEngine:
                 is_buy_signal = 1 if regime == 'RISK_ON' else 0
                 self.buy_signals.append(is_buy_signal)
                 
-                # Determine actual market outcome (21-day forward return)
-                future_idx = min(i + 21, len(valid_dates) - 1)
-                future_date = valid_dates[future_idx]
-                spy_return_21d = (prices.loc[future_date, 'SPY'] / prices.loc[date, 'SPY']) - 1
-                actual_bullish = 1 if spy_return_21d > 0 else 0
-                self.actual_outcomes.append(actual_bullish)
+                # Store the date index for later outcome calculation (avoid look-ahead bias)
+                self.actual_outcomes.append(i)
 
                 self.weights_history.append({
                     'date': date,
@@ -1022,8 +1017,8 @@ class BacktestEngine:
 
             days_since_rebalance += 1
         
-        # Calculate final Sniper Score
-        self._calculate_sniper_score()
+        # Calculate final Sniper Score (after backtest completes to avoid look-ahead bias)
+        self._calculate_sniper_score(prices, valid_dates)
 
         self.final_weights = current_weights.copy()
         self.final_ir = information_ratio.iloc[-1]  # Changed from relative_strength to IR
@@ -1034,7 +1029,10 @@ class BacktestEngine:
         logger.info(f"Backtest complete: {len(self.dates)} days")
         logger.info(f"Avg Diversity Score: {avg_eff_n:.2f}")
         logger.info(f"Total costs: ${total_costs:,.2f}")
-        logger.info(f"Final Sniper Score: {self.sniper_score:.3f}")
+        if self.sniper_score is not None:
+            logger.info(f"Final Sniper Score: {self.sniper_score:.3f}")
+        else:
+            logger.info("Final Sniper Score: N/A (no buy signals)")
 
         return pd.DataFrame({
             'Portfolio': self.portfolio_values,
@@ -1043,25 +1041,35 @@ class BacktestEngine:
             'ML_Prob': self.ml_probs
         }, index=self.dates)
     
-    def _calculate_sniper_score(self) -> None:
+    def _calculate_sniper_score(self, prices: pd.DataFrame, valid_dates: pd.Index) -> None:
         """
         Calculate Sniper Score (Precision): (Correct Buy Signals) / (Total Buy Signals).
         A 'Buy Signal' is when regime == RISK_ON.
+        
+        This is calculated after the backtest completes to avoid look-ahead bias.
+        Outcomes are determined by evaluating 21-day forward returns using only
+        data that would have been available at each signal date.
         """
         if not self.buy_signals:
-            self.sniper_score = 1.0  # Perfect Defense if no buy signals
+            self.sniper_score = None  # Undefined when there are no buy signals
             return
         
         total_buy_signals = sum(self.buy_signals)
         if total_buy_signals == 0:
-            self.sniper_score = 1.0  # Perfect Defense
+            self.sniper_score = None  # Undefined precision
             return
         
-        # Count correct buy signals (when we signaled buy and market was actually bullish)
-        correct_buys = sum(
-            1 for buy, outcome in zip(self.buy_signals, self.actual_outcomes)
-            if buy == 1 and outcome == 1
-        )
+        # Calculate actual outcomes for each signal date
+        correct_buys = 0
+        for buy, date_idx in zip(self.buy_signals, self.actual_outcomes):
+            if buy == 1:
+                # Calculate 21-day forward return (using data now available at end of backtest)
+                future_idx = min(date_idx + 21, len(valid_dates) - 1)
+                signal_date = valid_dates[date_idx]
+                future_date = valid_dates[future_idx]
+                spy_return_21d = (prices.loc[future_date, 'SPY'] / prices.loc[signal_date, 'SPY']) - 1
+                if spy_return_21d > 0:
+                    correct_buys += 1
         
         self.sniper_score = correct_buys / total_buy_signals
 
@@ -1463,11 +1471,15 @@ def main():
     print(f"Regime Distribution: {metrics['regime_counts']}")
     
     # --- SNIPER SCORE OUTPUT ---
-    sniper_score = metrics.get('sniper_score', 0.0)
-    sniper_status = "✓ GOOD" if sniper_score >= 0.55 else "⚠ WARNING"
-    print(f"SNIPER SCORE (Precision): {sniper_score:.3f} {sniper_status}")
-    if sniper_score < 0.55:
-        print("  ⚠ WARNING: Sniper Score < 0.55 indicates potential overfitting. Review model parameters.")
+    sniper_score = metrics.get('sniper_score')
+    sniper_threshold = config.ml_threshold  # Use centralized threshold (0.55)
+    if sniper_score is not None:
+        sniper_status = "✓ GOOD" if sniper_score >= sniper_threshold else "⚠ WARNING"
+        print(f"SNIPER SCORE (Precision): {sniper_score:.3f} {sniper_status}")
+        if sniper_score < sniper_threshold:
+            print(f"  ⚠ WARNING: Sniper Score < {sniper_threshold} indicates potential overfitting. Review model parameters.")
+    else:
+        print("SNIPER SCORE (Precision): N/A (no buy signals)")
 
     # --- FINAL ALLOCATION RECEIPT ---
     print("\n" + "=" * 85)

@@ -340,15 +340,25 @@ class AdaptiveRegimeClassifier:
 
         return probabilities.ffill().ewm(span=10).mean()
 
-    def get_regime(self, ml_prob: float, spy_above_sma: bool, current_vol: float) -> str:
+    def get_regime(self, ml_prob: float, spy_above_sma: bool, current_vol: float,
+                   tlt_momentum: float = 0.0, equity_risk_premium: float = 0.0) -> str:
         """
-        Consensus Veto Logic.
+        Consensus Veto Logic with Multi-Factor Veto (The 2022 Shield).
+        
+        DEFENSIVE if:
+        (1) spy_above_sma is False, OR
+        (2) current_vol > 0.35, OR
+        (3) tlt_momentum < -0.05 AND equity_risk_premium < 0 (Rate Shock Guard)
         """
         # 1. HARD VETO
         if not spy_above_sma or current_vol > 0.35:
             return 'DEFENSIVE'
+        
+        # 2. RATE SHOCK GUARD (The 2022 Shield)
+        if tlt_momentum < -0.05 and equity_risk_premium < 0:
+            return 'DEFENSIVE'
 
-        # 2. CONSENSUS PROBABILITY
+        # 3. CONSENSUS PROBABILITY
         if ml_prob > 0.55:
             return 'RISK_ON'
 
@@ -441,19 +451,26 @@ class AlphaDominatorOptimizer:
             information_ratio: pd.Series,
             asset_volatilities: pd.Series,
             regime: str,
-            above_sma: pd.Series
+            above_sma: pd.Series,
+            ml_prob: float = 0.5
     ) -> Tuple[np.ndarray, bool, str, Dict]:
         """
-        Optimize with IR filter, Growth Anchor, Shannon Entropy objective, and Turnover Brake.
+        Optimize with IR filter, Dynamic Growth Anchor (Smart Anchor), Shannon Entropy objective, and Turnover Brake.
+        
+        Dynamic Anchor: The Growth Anchor floor is now ML conviction-aware.
+        dynamic_anchor = max(0.20, min(0.60, (ml_prob - 0.50) * 2.0))
         """
         mean_ret = returns.mean() * 252
         cov = returns.cov() * 252
+        
+        # Calculate dynamic anchor based on ML conviction (Smart Anchor)
+        dynamic_anchor = max(0.20, min(0.60, (ml_prob - 0.50) * 2.0))
 
         # Get eligible mask based on regime with IR filter
         eligible_mask = self._get_eligible_mask(information_ratio, above_sma, regime)
         n_eligible = eligible_mask.sum()
 
-        logger.debug(f"Regime={regime}, Eligible={n_eligible}/{self.n_assets}")
+        logger.debug(f"Regime={regime}, Eligible={n_eligible}/{self.n_assets}, DynamicAnchor={dynamic_anchor:.1%}")
 
         if n_eligible == 0:
             logger.warning("No eligible assets, using fallback")
@@ -469,7 +486,7 @@ class AlphaDominatorOptimizer:
 
         # Build objective and constraints based on regime
         if regime == 'RISK_ON':
-            objective = self._build_risk_on_objective(mean_ret, cov, information_ratio, eligible_mask)
+            objective = self._build_risk_on_objective(mean_ret, cov, information_ratio, eligible_mask, dynamic_anchor)
             bounds = self._get_risk_on_bounds(eligible_mask)
         elif regime == 'RISK_REDUCED':
             objective = self._build_risk_reduced_objective(mean_ret, cov, eligible_mask)
@@ -567,20 +584,21 @@ class AlphaDominatorOptimizer:
             mean_ret: pd.Series,
             cov: pd.DataFrame,
             information_ratio: pd.Series,
-            eligible_mask: np.ndarray
+            eligible_mask: np.ndarray,
+            dynamic_anchor: float = 0.60
     ) -> callable:
         """
         RISK_ON Objective: Maximize IR_Score + (0.15 × Shannon Entropy) - Turnover Penalty
 
         NO SHARPE TRAP - no volatility penalty on growth leaders.
-        GROWTH ANCHOR - soft penalty if Growth Anchors < 60%
+        DYNAMIC ANCHOR (Smart Anchor) - soft penalty if Growth Anchors < dynamic_anchor
         TURNOVER BRAKE - penalty = sum(abs(new - old)) * turnover_penalty (configurable)
         """
         aligned_ir = information_ratio.reindex(pd.Index(self.assets)).fillna(0).values
         mean_ret_arr = mean_ret.values
         cov_arr = cov.values
         entropy_lambda = self.config.entropy_lambda  # 0.15
-        min_growth_anchor = self.config.min_growth_anchor  # 60%
+        min_growth_anchor = dynamic_anchor  # Use ML conviction-aware dynamic_anchor
         growth_anchor_penalty_mult = self.config.growth_anchor_penalty  # High-priority penalty multiplier
         turnover_penalty_mult = self.config.turnover_penalty  # The Turnover Brake
 
@@ -607,7 +625,7 @@ class AlphaDominatorOptimizer:
             max_entropy = np.log(n_eligible) if n_eligible > 1 else 1
             norm_entropy = entropy / max_entropy
 
-            # GROWTH ANCHOR: High-priority soft penalty if Growth Anchors < 60%
+            # DYNAMIC ANCHOR (Smart Anchor): High-priority soft penalty if Growth Anchors < dynamic_anchor
             growth_weight = sum(w[idx] for idx in growth_anchor_idx)
             growth_penalty = max(0, min_growth_anchor - growth_weight) ** 2 * growth_anchor_penalty_mult
 
@@ -858,6 +876,11 @@ class BacktestEngine:
         self.final_weights: Optional[np.ndarray] = None
         self.final_ir: Optional[pd.Series] = None  # Changed from final_rs to final_ir
         self.final_diagnostics: Optional[Dict] = None
+        
+        # Sniper Score tracking
+        self.buy_signals: List[int] = []  # 1 if buy signal, 0 otherwise
+        self.actual_outcomes: List[int] = []  # Date indices for outcome calculation
+        self.sniper_score: Optional[float] = None  # None if undefined (no buy signals)
 
     def run(
             self,
@@ -935,16 +958,20 @@ class BacktestEngine:
                 # FIX: Use the VIX feature (Instant Fear) instead of lagging asset volatility
                 # features['realized_vol'] is now the VIX (set in DataManager)
                 current_vol = features.loc[date, 'realized_vol']
+                
+                # Get tlt_momentum and equity_risk_premium for Rate Shock Guard
+                tlt_momentum = features.loc[date, 'tlt_momentum']
+                equity_risk_premium = features.loc[date, 'equity_risk_premium']
 
-                regime = classifier.get_regime(ml_prob, spy_above, current_vol)
+                regime = classifier.get_regime(ml_prob, spy_above, current_vol, tlt_momentum, equity_risk_premium)
 
                 lookback_start = valid_dates[i - lookback_days]
                 lookback_ret = returns.loc[lookback_start:prev_date][optimizer.assets]
 
-                # Use IR for optimization
+                # Use IR for optimization with ml_prob for Dynamic Anchor
                 new_weights, success, method, diagnostics = optimizer.optimize(
                     lookback_ret, current_raw_mom, current_ir, current_vols,
-                    regime, asset_above_sma
+                    regime, asset_above_sma, ml_prob
                 )
 
                 if diagnostics:
@@ -959,6 +986,13 @@ class BacktestEngine:
                 self.rebalance_periods_used.append(rebalance_period)
                 current_weights = new_weights
                 days_since_rebalance = 0
+                
+                # Track Sniper Score: Buy signal if RISK_ON regime
+                is_buy_signal = 1 if regime == 'RISK_ON' else 0
+                self.buy_signals.append(is_buy_signal)
+                
+                # Store the date index for later outcome calculation (avoid look-ahead bias)
+                self.actual_outcomes.append(i)
 
                 self.weights_history.append({
                     'date': date,
@@ -982,6 +1016,9 @@ class BacktestEngine:
             self.ml_probs.append(ml_prob)
 
             days_since_rebalance += 1
+        
+        # Calculate final Sniper Score (after backtest completes to avoid look-ahead bias)
+        self._calculate_sniper_score(prices, valid_dates)
 
         self.final_weights = current_weights.copy()
         self.final_ir = information_ratio.iloc[-1]  # Changed from relative_strength to IR
@@ -992,6 +1029,10 @@ class BacktestEngine:
         logger.info(f"Backtest complete: {len(self.dates)} days")
         logger.info(f"Avg Diversity Score: {avg_eff_n:.2f}")
         logger.info(f"Total costs: ${total_costs:,.2f}")
+        if self.sniper_score is not None:
+            logger.info(f"Final Sniper Score: {self.sniper_score:.3f}")
+        else:
+            logger.info("Final Sniper Score: N/A (no buy signals)")
 
         return pd.DataFrame({
             'Portfolio': self.portfolio_values,
@@ -999,6 +1040,38 @@ class BacktestEngine:
             'Regime': self.regimes,
             'ML_Prob': self.ml_probs
         }, index=self.dates)
+    
+    def _calculate_sniper_score(self, prices: pd.DataFrame, valid_dates: pd.Index) -> None:
+        """
+        Calculate Sniper Score (Precision): (Correct Buy Signals) / (Total Buy Signals).
+        A 'Buy Signal' is when regime == RISK_ON.
+        
+        This is calculated after the backtest completes to avoid look-ahead bias.
+        Outcomes are determined by evaluating 21-day forward returns using only
+        data that would have been available at each signal date.
+        """
+        if not self.buy_signals:
+            self.sniper_score = None  # Undefined when there are no buy signals
+            return
+        
+        total_buy_signals = sum(self.buy_signals)
+        if total_buy_signals == 0:
+            self.sniper_score = None  # Undefined precision
+            return
+        
+        # Calculate actual outcomes for each signal date
+        correct_buys = 0
+        for buy, date_idx in zip(self.buy_signals, self.actual_outcomes):
+            if buy == 1:
+                # Calculate 21-day forward return (using data now available at end of backtest)
+                future_idx = min(date_idx + 21, len(valid_dates) - 1)
+                signal_date = valid_dates[date_idx]
+                future_date = valid_dates[future_idx]
+                spy_return_21d = (prices.loc[future_date, 'SPY'] / prices.loc[signal_date, 'SPY']) - 1
+                if spy_return_21d > 0:
+                    correct_buys += 1
+        
+        self.sniper_score = correct_buys / total_buy_signals
 
     def calculate_metrics(self, results: pd.DataFrame) -> Dict:
         """Calculate metrics."""
@@ -1053,7 +1126,8 @@ class BacktestEngine:
             'regime_counts': regime_counts,
             'avg_diversity_score': avg_eff_n,
             'optimal_rebalance_period': most_common_rebal,
-            'total_costs': sum(self.transaction_costs)
+            'total_costs': sum(self.transaction_costs),
+            'sniper_score': self.sniper_score
         }
 
     def plot_performance(self, results: pd.DataFrame) -> None:
@@ -1395,6 +1469,17 @@ def main():
     print(f"Most Common Rebalance Period: {metrics['optimal_rebalance_period']} days")
     print(f"Total Transaction Costs: ${metrics['total_costs']:,.2f}")
     print(f"Regime Distribution: {metrics['regime_counts']}")
+    
+    # --- SNIPER SCORE OUTPUT ---
+    sniper_score = metrics.get('sniper_score')
+    sniper_threshold = config.ml_threshold  # Use centralized threshold (0.55)
+    if sniper_score is not None:
+        sniper_status = "✓ GOOD" if sniper_score >= sniper_threshold else "⚠ WARNING"
+        print(f"SNIPER SCORE (Precision): {sniper_score:.3f} {sniper_status}")
+        if sniper_score < sniper_threshold:
+            print(f"  ⚠ WARNING: Sniper Score < {sniper_threshold} indicates potential overfitting. Review model parameters.")
+    else:
+        print("SNIPER SCORE (Precision): N/A (no buy signals)")
 
     # --- FINAL ALLOCATION RECEIPT ---
     print("\n" + "=" * 85)

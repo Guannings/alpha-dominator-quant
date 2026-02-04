@@ -84,6 +84,10 @@ class StrategyConfig:
 
     # Floating point tolerance for constraint checks
     constraint_tolerance: float = 0.001
+    
+    # Anxiety Veto thresholds (for elevated VIX conditions)
+    anxiety_vix_threshold: float = 0.18  # VIX level above which anxiety veto applies
+    anxiety_ml_prob_threshold: float = 0.75  # Required ML probability when VIX is elevated
 
     # UI colors
     alert_background_color: str = '#FFCCCC'  # Light Red for health dashboard alerts
@@ -361,15 +365,17 @@ class AdaptiveRegimeClassifier:
         DEFENSIVE if:
         (1) spy_above_sma is False, OR
         (2) current_vol > 0.35, OR
-        (3) current_vol > 0.18 AND ml_prob < 0.75 (Anxiety Veto), OR
+        (3) current_vol > anxiety_vix_threshold AND ml_prob < anxiety_ml_prob_threshold (Anxiety Veto), OR
         (4) tlt_momentum < -0.05 AND equity_risk_premium < 0 (Rate Shock Guard)
         """
         # 1. HARD VETO
         if not spy_above_sma or current_vol > 0.35:
             return 'DEFENSIVE'
         
-        # 2. ANXIETY VETO - When VIX is elevated (>0.18), require 75% conviction
-        if current_vol > 0.18 and ml_prob < 0.75:
+        # 2. ANXIETY VETO - When VIX is elevated, require higher conviction
+        anxiety_vix_threshold = self.config.anxiety_vix_threshold
+        anxiety_ml_prob_threshold = self.config.anxiety_ml_prob_threshold
+        if current_vol > anxiety_vix_threshold and ml_prob < anxiety_ml_prob_threshold:
             return 'DEFENSIVE'
         
         # 3. RATE SHOCK GUARD (The 2022 Shield)

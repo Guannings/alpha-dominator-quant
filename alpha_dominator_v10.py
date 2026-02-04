@@ -486,7 +486,7 @@ class AlphaDominatorOptimizer:
 
         # Build objective and constraints based on regime
         if regime == 'RISK_ON':
-            objective = self._build_risk_on_objective(mean_ret, cov, information_ratio, eligible_mask, dynamic_anchor)
+            objective = self._build_risk_on_objective(raw_momentum, cov, information_ratio, eligible_mask, dynamic_anchor)
             bounds = self._get_risk_on_bounds(eligible_mask)
         elif regime == 'RISK_REDUCED':
             objective = self._build_risk_reduced_objective(mean_ret, cov, eligible_mask)
@@ -581,7 +581,7 @@ class AlphaDominatorOptimizer:
 
     def _build_risk_on_objective(
             self,
-            mean_ret: pd.Series,
+            raw_momentum: pd.Series,
             cov: pd.DataFrame,
             information_ratio: pd.Series,
             eligible_mask: np.ndarray,
@@ -593,9 +593,13 @@ class AlphaDominatorOptimizer:
         NO SHARPE TRAP - no volatility penalty on growth leaders.
         DYNAMIC ANCHOR (Smart Anchor) - soft penalty if Growth Anchors < dynamic_anchor
         TURNOVER BRAKE - penalty = sum(abs(new - old)) * turnover_penalty (configurable)
+        
+        MOMENTUM-BASED: Uses current raw_momentum (3-6 month trend) instead of 15-year mean_ret.
+        Assets with missing momentum data are treated as having zero momentum (no favorable bias).
         """
         aligned_ir = information_ratio.reindex(pd.Index(self.assets)).fillna(0).values
-        mean_ret_arr = mean_ret.values
+        # Use raw_momentum as base return expectation (instead of historical mean_ret)
+        raw_momentum_arr = raw_momentum.reindex(pd.Index(self.assets)).fillna(0).values
         cov_arr = cov.values
         entropy_lambda = self.config.entropy_lambda  # 0.15
         min_growth_anchor = dynamic_anchor  # Use ML conviction-aware dynamic_anchor
@@ -607,8 +611,9 @@ class AlphaDominatorOptimizer:
         if ir_scaled.max() > 0:
             ir_scaled = ir_scaled / ir_scaled.max()
 
-        # IR-boosted returns (reward high IR assets)
-        boosted_returns = mean_ret_arr * (1.0 + 2.0 * ir_scaled)
+        # ALPHA-WEIGHTED RETURNS: current_momentum * (1.0 + 2.0 * ir_scaled)
+        # Uses raw_momentum (3-6 month trend) as base, boosted by IR
+        boosted_returns = raw_momentum_arr * (1.0 + 2.0 * ir_scaled)
 
         growth_anchor_idx = self.growth_anchor_idx
         # Use zeros for first optimization to skip turnover penalty

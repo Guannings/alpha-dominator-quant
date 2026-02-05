@@ -368,7 +368,7 @@ b. Distribution Histograms: It plots the frequency distribution of both CAGR and
 The Alpha Dominator v10.0 represents a modern evolution in public finance and asset management—shifting from reactive rebalancing to proactive, regime-aware navigation. It is a robust asset for firms specializing in infrastructure advisory and institutional wealth preservation.
 
 ====================================================================================
-# **Development Methodology and AI-Accelerated Workflow**
+# **Development Methodology**
 
 **The core financial strategy—Mean-Variance Optimization and Machine Learning-driven Regime Detection—was conceptualized and architected by the author.**
 

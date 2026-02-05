@@ -107,6 +107,7 @@ a. anxiety_vix_threshold (0.18): When market fear (VIX) crosses 18, the strategy
 b. anxiety_ml_prob_threshold (0.75): In an Anxious state, the conviction requirement jumps from 55% to 75%—the model must be "absolutely certain" before staying in the market during volatility.
 
 
+
 **II. Data Orchestration & Feature Engineering (DataManager)**
 
 The Data Orchestration (DataManager) layer is the engine responsible for the ingestion, cleaning, and complex transformation of raw market data into institutional-grade features. By moving beyond simple price action, this section builds a high-dimensional view of the market that captures the interplay between momentum, volatility, and macro-economic risk.
@@ -140,6 +141,7 @@ g. Bond Signal (TLT Momentum): This tracks the 21-day performance of long-term T
 **4. Temporal Alignment and Integrity**
 
 The final stage of orchestration is the rigorous temporal alignment of all datasets. Because indicators like the 200-day SMA or the 6-month IR have different "warm-up" periods, the DataManager performs an intersection of all indices. This ensures that on any given backtest day, the model is looking at a perfectly synchronized snapshot of the market—preventing "NaN" errors and, more importantly, eliminating any possibility of look-ahead bias that could invalidate the results.
+
 
 
 **III. The Consensus Intelligence Engine (AdaptiveRegimeClassifier)**
@@ -181,6 +183,7 @@ c. Model Stability Tracking: The system monitors the standard deviation of accur
 Because black-box models are unacceptable in institutional advisory, the classifier integrates SHAP (SHapley Additive exPlanations). This provides a detailed "Feature Importance" report, allowing the user to explain exactly why a decision was made. For instance, the user can point to a SHAP summary plot to show that TLT Momentum was the primary factor that triggered a defensive exit during the bond market crash of 2022.
 
 
+
 **IV. Strategic Veto Logic (The "Regime Shield")**
 
 The Strategic Veto Logic (internally referred to as the "Regime Shield") serves as the final risk-control layer, designed to protect the portfolio from "Black Swan" events and structural macro-economic shifts that machine learning models might overlook. By applying hard overrides based on institutional financial logic, the strategy ensures that capital preservation takes priority over theoretical alpha generation during periods of extreme market stress.
@@ -220,6 +223,7 @@ For extreme volatility events (e.g., the 2020 COVID crash), the system employs a
 a. The Limit: If realized volatility exceeds 35%, the system bypasses all other logic and forces a DEFENSIVE allocation.
 
 b. Purpose: This acts as a circuit breaker, moving the portfolio to safe havens when the market enters a state of irrational liquidation where historical correlations and machine learning patterns typically break down.
+
 
 
 **V. Alpha Dominator Optimization (AlphaDominatorOptimizer)**
@@ -271,6 +275,7 @@ a. Risk Reduced: Switches to a standard Sharpe Ratio maximization to find the mo
 b. Defensive: Switches to a Minimum Variance objective, ignoring returns entirely to find the allocation with the lowest possible volatility.
 
 
+
 **VI. Backtest Execution & Performance Analytics (BacktestEngine)**
 
 The Backtest Execution & Performance Analytics (BacktestEngine) is the final investigative layer of the strategy, providing a rigorous, out-of-sample validation of the system's decision-making integrity over a 15-year historical horizon. This engine does not merely calculate returns; it audit-trails every regime shift, rebalance decision, and transaction cost to ensure the strategy's theoretical edge translates into institutional-grade performance.
@@ -320,6 +325,7 @@ c. Regime Analysis: A multi-panel view aligning SPY price action with ML probabi
 By combining these metrics, the BacktestEngine proves that the Alpha Dominator is not just a "lucky" model, but a disciplined execution system that prioritizes high-conviction entries and multi-layered risk management.
 
 
+
 **VII. Tail-Risk Stress Testing (MonteCarloSimulator)**
 
 The Monte Carlo Simulator serves as the final, rigorous validation layer of the Alpha Dominator framework. It transitions the analysis from historical backtesting (what did happen) to stochastic modeling (what could happen), providing an institutional-grade assessment of tail risk and expected future performance.
@@ -354,6 +360,7 @@ b. Risk-Adjusted Expectations: It computes the mean Compound Annual Growth Rate 
 a. Path Visualization: The system generates a visual plot of a subset of random paths (e.g., 100 paths), overlaid with the mean trajectory and the 95% Confidence Interval bands. This provides an intuitive visual representation of the range of potential outcomes.
 
 b. Distribution Histograms: It plots the frequency distribution of both CAGR and Ending Portfolio Values. These histograms are color-coded to highlight loss zones (red), underperformance zones (orange), and target zones (green), allowing for an immediate visual assessment of the strategy's risk/reward skew.
+
 
 
 **VIII. Conclusion**

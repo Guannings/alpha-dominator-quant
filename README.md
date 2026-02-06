@@ -24,6 +24,26 @@ At 1,000,000 iterations, the calculation of the probability of loss, confidence 
 If you were to run the script after carefully reading and agreeing with the "⚠️ Disclaimer and Terms of Use" below, **before running,** open alpha_dominator_v10.py and **find the configuration line: n_simulations = 1000000** (inside the main function or StrategyConfig) and **change it to 10,000** or a smaller number of your choice.
 
 ====================================================================================
+## 🚀 How to Run (Docker)
+This project is containerized to ensure full reproducibility of the financial logic and ML environment. It runs on any machine with Docker installed.
+
+### 1. Prerequisites
+* **Docker Desktop** installed and running ([Download here](https://www.docker.com/products/docker-desktop/))
+* **Git** (to clone the repository)
+
+### 2. Installation
+Open your terminal (or Command Prompt) and run the following commands:
+
+```bash
+# Clone the repository
+git clone [https://github.com/YOUR_USERNAME/alpha-dominator.git](https://github.com/YOUR_USERNAME/alpha-dominator.git)
+cd alpha-dominator
+
+# Build the Docker Container
+# (This installs Python 3.11, XGBoost, SHAP, and all dependencies in a sterile environment)
+docker build -t alpha-dominator .
+
+====================================================================================
 # **⚠️ Disclaimer and Terms of Use**
 **1. Educational Purpose Only**
 

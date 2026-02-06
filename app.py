@@ -1802,6 +1802,33 @@ def main():
         unsafe_allow_html=True
     )
 
+    # ==========================================================================
+    # DISCLAIMER AND TERMS OF USE
+    # ==========================================================================
+    with st.expander("⚠️ Disclaimer and Terms of Use"):
+        st.markdown("""
+### 1. Educational Purpose Only
+This software is for educational and research purposes only and was built as a personal project by the student **PEHC** at **National Chengchi University (NCCU)**. It is not intended to be a source of financial advice, and the author is not a registered financial advisor. The algorithms, simulations, and optimization techniques implemented herein—including **Consensus Machine Learning**, **Shannon Entropy**, and **Geometric Brownian Motion**—are demonstrations of theoretical concepts and should not be construed as a recommendation to buy, sell, or hold any specific security or asset class.
+
+### 2. No Financial Advice
+Nothing in this repository constitutes professional financial, legal, or tax advice. Investment decisions should be made based on your own research and consultation with a qualified financial professional. The strategies modeled in this software—specifically the **60% Growth Anchor** and **IR Filter**—may not be suitable for your specific financial situation, risk tolerance, or investment goals.
+
+### 3. Risk of Loss
+All investments involve risk, including the possible loss of principal.
+* **a. Past Performance:** Historical returns (such as the 19.5% CAGR) and volatility data used in these simulations are not indicative of future results.
+* **b. Simulation Limitations:** Monte Carlo simulations are probabilistic models based on assumptions (such as constant drift and volatility) that may not reflect real-world market conditions, black swan events, or liquidity crises.
+* **c. Model Vetoes:** While the Rate Shock Guard and Anxiety Veto are designed to mitigate losses, they are based on historical thresholds that may fail in unprecedented macro-economic environments.
+* **d. Market Data:** Data fetched from third-party APIs (e.g., Yahoo Finance) may be delayed, inaccurate, or incomplete.
+
+### 4. Hardware and Computation Liability
+The author assumes no responsibility for hardware failure, system instability, or data loss resulting from the execution of the 1,000,000 Monte Carlo simulations. Execution of this code at the configured scale is a high-stress computational event that should only be performed on hardware meeting the minimum specified requirements.
+
+### 5. "AS-IS" SOFTWARE WARRANTY
+**THIS SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE, AND NON-INFRINGEMENT. IN NO EVENT SHALL THE AUTHOR OR COPYRIGHT HOLDER BE LIABLE FOR ANY CLAIM, DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE, ARISING FROM, OUT OF, OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.**
+
+**BY USING THIS SOFTWARE, YOU AGREE TO ASSUME ALL RISKS ASSOCIATED WITH YOUR INVESTMENT DECISIONS AND HARDWARE USAGE, RELEASING THE AUTHOR (PEHC) FROM ANY LIABILITY REGARDING YOUR FINANCIAL OUTCOMES OR SYSTEM INTEGRITY.**
+""")
+
 
 if __name__ == "__main__":
     main()

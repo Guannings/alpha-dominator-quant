@@ -1,27 +1,91 @@
-# ⚠️ HARDWARE WARNING: HIGH COMPUTATIONAL LOAD
-**PLEASE READ BEFORE RUNNING:** 
+# **🚀 How to Run the Docker File **
 
-This script is currently **configured to run 1,000,000 (1 Million) Monte Carlo simulations.** This is an extreme stress test intended for high-performance workstations.
+This project is fully containerized to ensure reproducibility. 
 
-**1. System Requirements:**
+**It runs consistently on whatever envirionment using Docker.**
 
-Minimum 32GB RAM and a multi-core processor (e.g., Ryzen 7 / Core i7 or better).
+### 1. Prerequisites
+**Docker Desktop (The Environment)**
 
-**2. Memory Intensity:**
+  Installed and running ([Download here if you don't have one](https://www.docker.com/products/docker-desktop/))
+  
+**b. Git (The Code Downloader)** 
 
-Each simulation path generates and stores thousands of data points for the 5-year projection period, leading to a massive memory footprint.
+  Check if you have it by typing `git --version` in your terminal. If not installed:
+  
+   **macOS:** Open Terminal and type `xcode-select --install` or download from [git-scm.com](https://git-scm.com/download/mac).
+   
+   **Windows:** Download and install **Git for Windows** from [gitforwindows.org](https://gitforwindows.org/).
+   
+   **Linux:** Run `sudo apt-get install git` (Debian/Ubuntu).
 
-**3. Risk:** 
 
-Running this on a standard office laptop or non-gaming PC (8GB/16GB RAM) will likely cause a Memory Overflow (OOM), resulting in a system freeze or crash.
+### 2. Installation
+Open your terminal (or Command Prompt) and run the following commands:
 
-**4. Execution Time:** 
+```bash
+# Clone the repository
+git clone https://github.com/Guannings/Alpha-Dominator-Quant.git
+cd alpha-dominator
+```
 
-At 1,000,000 iterations, the calculation of the probability of loss, confidence intervals, and ending value distributions will take several minutes even on high-end hardware.
+### 3. Enter the project folder
+```bash
+cd alpha-dominator-quant
+```
 
-## Recommendation for Standard Users: ##
+### 4. Build the Docker Image (This installs the Python 3.11 environment + XGBoost + SHAP.)
+```bash
+docker build -t alpha-dominator .
+```
 
-If you were to run the script after carefully reading and agreeing with the "⚠️ Disclaimer and Terms of Use" below, **before running,** open alpha_dominator_v10.py and **find the configuration line: n_simulations = 1000000** (inside the main function or StrategyConfig) and **change it to 10,000** or a smaller number of your choice.
+### 5. Launching the Dashboard
+
+You can choose the port that best fits your local setup:
+
+Option A: Default Port (8501)
+
+```bash
+docker run --rm -p 8501:8501 alpha-dominator
+```
+Access at: Local URL
+
+Option B: Custom Port (e.g., 1546)
+
+```bash
+docker run --rm -p 1546:8501 alpha-dominator
+```
+Access at: Local URL
+
+**Port Conflicts:**
+
+**If port 8501 or 1546 are both busy, simply use Option B above to map it to a different local port (replace the 4-digit number before -8501 to with a 4-digit number of your choice).**
+
+====================================================================================
+
+# **🖥️ Computational Requirements**
+
+To ensure the stability of the **Monte Carlo simulation engine** and the **XGBoost training pipeline**, the following resources are recommended:
+
+**1. Memory (RAM):**
+
+  **a. System Total:** 8GB minimum.
+      
+  **b. Docker Allocation:**
+      
+ Ensure at least **4GB** is dedicated to the container in Docker Desktop settings.
+      
+ This prevents **Out-of-Memory (OOM)** errors during the 1,000,000-path stress tests.
+      
+**2. Processor (CPU):**
+  
+a. **4+ Cores** recommended.
+    
+b. The machine learning model utilizes multi-threading for rapid retraining and regime classification.
+      
+**3. Connectivity:**
+  
+Data Pipeline: High-speed internet access is mandatory for real-time data ingestion via the Yahoo Finance API.
 
 ====================================================================================
 # **⚠️ Disclaimer and Terms of Use**
@@ -37,11 +101,11 @@ Nothing in this repository constitutes professional financial, legal, or tax adv
 
 All investments involve risk, including the possible loss of principal.
 
-Past Performance: Historical returns (such as the 19.5% CAGR) and volatility data used in these simulations are not indicative of future results.
+a. Past Performance: Historical returns (such as the 19.5% CAGR) and volatility data used in these simulations are not indicative of future results.
 
-Simulation Limitations: Monte Carlo simulations are probabilistic models based on assumptions (such as constant drift and volatility) that may not reflect real-world market conditions, black swan events, or liquidity crises.
+b. Simulation Limitations: Monte Carlo simulations are probabilistic models based on assumptions (such as constant drift and volatility) that may not reflect real-world market conditions, black swan events, or liquidity crises.
 
-Model Vetoes: While the Rate Shock Guard and Anxiety Veto are designed to mitigate losses, they are based on historical thresholds that may fail in unprecedented macro-economic environments.
+c. Model Vetoes: While the Rate Shock Guard and Anxiety Veto are designed to mitigate losses, they are based on historical thresholds that may fail in unprecedented macro-economic environments.
 
 Market Data: Data fetched from third-party APIs (e.g., Yahoo Finance) may be delayed, inaccurate, or incomplete.
 

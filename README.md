@@ -2,7 +2,7 @@
 
 This project is fully containerized to ensure reproducibility. 
 
-**It runs consistently on whatever envirionment using Docker.**
+**It runs consistently on whatever software envirionment using Docker.**
 
 ### 1. Prerequisites
 **Docker Desktop (The Environment)**

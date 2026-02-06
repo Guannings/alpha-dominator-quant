@@ -1,0 +1,14 @@
+# Python bytecode (junk created when you run the app)
+__pycache__/
+*.pyc
+
+# Virtual Environments (The local libraries on your laptop)
+.venv/
+env/
+venv/
+
+# macOS System Files
+.DS_Store
+
+# Sensitive Data
+.env

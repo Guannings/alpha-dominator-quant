@@ -29,9 +29,15 @@ docker run --rm -p 8501:8501 alpha-dominator
 ```
 
 * **Option B: Custom Port (e.g., 1546)**
-* ```bash
+```bash
 docker run --rm -p 1546:8501 alpha-dominator
 ```
+
+**⚠️ Common Troubleshooting**
+
+DNS Issues: If you see Could not resolve host errors, use the Google DNS flag: docker run --rm --dns 8.8.8.8 -p 8501:8501 alpha-dominator
+
+Port Conflicts: If port 8501 is busy, simply use Option B above to map it to a different local port.
 
 ====================================================================================
 

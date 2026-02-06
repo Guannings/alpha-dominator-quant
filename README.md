@@ -13,7 +13,7 @@ Open your terminal (or Command Prompt) and run the following commands to downloa
 
 ```bash
 # 1. Clone the repository
-git clone [https://github.com/YOUR_USERNAME/alpha-dominator.git](https://github.com/YOUR_USERNAME/alpha-dominator.git)
+git clone https://github.com/Guannings/alpha-dominator-quant.git
 cd alpha-dominator
 
 # 2. Build the Docker Image

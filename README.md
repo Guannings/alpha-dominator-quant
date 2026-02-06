@@ -1,4 +1,4 @@
-# **🚀 How to Run the Docker File **
+# **🚀 How to Run the Docker File**
 
 This project is fully containerized to ensure reproducibility. 
 

@@ -72,7 +72,7 @@ API Connection: The container must be able to reach the Yahoo Finance (yfinance)
 
 Storage: Approximately **500MB of disk space** for the Docker image and cached market data.
 
-Architecture Support: The provided Dockerfile is compatible with both ARM64 (Apple Silicon M1/M2/M3) and x86_64 (Intel/AMD) architectures.
+Architecture Support: The provided Dockerfile is compatible with both ARM64 (Apple Silicon) and x86_64 (Intel/AMD) architectures.
 
 ====================================================================================
 # **⚠️ Disclaimer and Terms of Use**

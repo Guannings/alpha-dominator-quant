@@ -14,7 +14,7 @@ Open your terminal (or Command Prompt) and run the following commands to downloa
 ```bash
 # 1. Clone the repository
 git clone https://github.com/Guannings/alpha-dominator-quant.git
-cd alpha-dominator
+cd alpha-dominator-quant
 
 # 2. Build the Docker Image
 # This creates a "snapshot" containing Python 3.11, XGBoost, SHAP, and all dependencies.

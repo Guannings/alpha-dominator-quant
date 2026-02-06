@@ -2,7 +2,7 @@
 
 This project is fully containerized to ensure reproducibility of the financial logic and Machine Learning environment. 
 
-**It runs consistently on any operating system (Windows, macOS, Linux) with Docker installed.**
+**It runs consistently on any operating system (Windows, macOS, Linux) with Docker and Git installed.**
 
 ### 1. Prerequisites
 **a. Docker Desktop:** 

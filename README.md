@@ -78,7 +78,7 @@ Architecture Support: The provided Dockerfile is compatible with both ARM64 (App
 # **⚠️ Disclaimer and Terms of Use**
 **1. Educational Purpose Only**
 
-This software is for educational and research purposes only and was built as a personal project by the student PEHC at National Chengchi University (NCCU). It is not intended to be a source of financial advice, and the authors are not registered financial advisors. The algorithms, simulations, and optimization techniques implemented herein—including Consensus Machine Learning, Shannon Entropy, and Geometric Brownian Motion—are demonstrations of theoretical concepts and should not be construed as a recommendation to buy, sell, or hold any specific security or asset class.
+This software is for educational and research purposes only and was built as a personal project by the student PEHC at National Chengchi University (NCCU). It is not intended to be a source of financial advice, and the author is not a registered financial advisor. The algorithms, simulations, and optimization techniques implemented herein—including Consensus Machine Learning, Shannon Entropy, and Geometric Brownian Motion—are demonstrations of theoretical concepts and should not be construed as a recommendation to buy, sell, or hold any specific security or asset class.
 
 **2. No Financial Advice**
 
@@ -88,13 +88,13 @@ Nothing in this repository constitutes professional financial, legal, or tax adv
 
 All investments involve risk, including the possible loss of principal.
 
-Past Performance: Historical returns (such as the 19.5% CAGR) and volatility data used in these simulations are not indicative of future results.
+a. Past Performance: Historical returns (such as the 19.5% CAGR) and volatility data used in these simulations are not indicative of future results.
 
-Simulation Limitations: Monte Carlo simulations are probabilistic models based on assumptions (such as constant drift and volatility) that may not reflect real-world market conditions, black swan events, or liquidity crises.
+b. Simulation Limitations: Monte Carlo simulations are probabilistic models based on assumptions (such as constant drift and volatility) that may not reflect real-world market conditions, black swan events, or liquidity crises.
 
-Model Vetoes: While the Rate Shock Guard and Anxiety Veto are designed to mitigate losses, they are based on historical thresholds that may fail in unprecedented macro-economic environments.
+c. Model Vetoes: While the Rate Shock Guard and Anxiety Veto are designed to mitigate losses, they are based on historical thresholds that may fail in unprecedented macro-economic environments.
 
-Market Data: Data fetched from third-party APIs (e.g., Yahoo Finance) may be delayed, inaccurate, or incomplete.
+d. Market Data: Data fetched from third-party APIs (e.g., Yahoo Finance) may be delayed, inaccurate, or incomplete.
 
 **4. Hardware and Computation Liability**
 

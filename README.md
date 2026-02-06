@@ -1,48 +1,45 @@
-# ⚠️ HARDWARE WARNING: HIGH COMPUTATIONAL LOAD
-**PLEASE READ BEFORE RUNNING:** 
-
-This script is currently **configured to run 1,000,000 (1 Million) Monte Carlo simulations.** This is an extreme stress test intended for high-performance workstations.
-
-**1. System Requirements:**
-
-Minimum 32GB RAM and a multi-core processor (e.g., Ryzen 7 / Core i7 or better).
-
-**2. Memory Intensity:**
-
-Each simulation path generates and stores thousands of data points for the 5-year projection period, leading to a massive memory footprint.
-
-**3. Risk:** 
-
-Running this on a standard office laptop or non-gaming PC (8GB/16GB RAM) will likely cause a Memory Overflow (OOM), resulting in a system freeze or crash.
-
-**4. Execution Time:** 
-
-At 1,000,000 iterations, the calculation of the probability of loss, confidence intervals, and ending value distributions will take several minutes even on high-end hardware.
-
-## Recommendation for Standard Users: ##
-
-If you were to run the script after carefully reading and agreeing with the "⚠️ Disclaimer and Terms of Use" below, **before running,** open alpha_dominator_v10.py and **find the configuration line: n_simulations = 1000000** (inside the main function or StrategyConfig) and **change it to 10,000** or a smaller number of your choice.
-
-====================================================================================
 ## 🚀 How to Run (Docker)
-This project is containerized to ensure full reproducibility of the financial logic and ML environment. It runs on any machine with Docker installed.
+
+This project is fully containerized to ensure reproducibility of the financial logic and machine learning environment. It runs consistently on any operating system (Windows, macOS, Linux) with Docker installed.
 
 ### 1. Prerequisites
-* **Docker Desktop** installed and running ([Download here](https://www.docker.com/products/docker-desktop/))
-* **Git** (to clone the repository)
+* **Docker Desktop:** Installed and running. ([Download here](https://www.docker.com/products/docker-desktop/))
+* **Git:** To clone the repository.
 
 ### 2. Installation
-Open your terminal (or Command Prompt) and run the following commands:
+Open your terminal (or Command Prompt) and run the following commands to download the code and build the environment:
 
 ```bash
-# Clone the repository
+# 1. Clone the repository
 git clone [https://github.com/YOUR_USERNAME/alpha-dominator.git](https://github.com/YOUR_USERNAME/alpha-dominator.git)
 cd alpha-dominator
 
-# Build the Docker Container
-# (This installs Python 3.11, XGBoost, SHAP, and all dependencies in a sterile environment)
+# 2. Build the Docker Image
+# This creates a "snapshot" containing Python 3.11, XGBoost, SHAP, and all dependencies.
 docker build -t alpha-dominator .
+```
 
+====================================================================================
+
+# **🖥️ System & Resource Requirements**
+
+While Docker ensures environment consistency, the following hardware resources are recommended for optimal performance of the strategy's backtesting and simulation engines:
+
+Memory (RAM): * Minimum: 8GB total system RAM.
+
+Docker Allocation: Ensure the Docker Engine is allocated at least 4GB of RAM in your Docker Desktop settings to avoid Out of Memory crashes during high-volume Monte Carlo simulations.
+
+Processor (CPU): * Minimum: 4 Cores.
+
+Optimization: The AdaptiveRegimeClassifier utilizes multi-threading for the walk-forward training process; higher core counts will significantly reduce initial dashboard load times.
+
+Network Access: * Data Ingestion: An active internet connection is mandatory.
+
+API Connection: The container must be able to reach the Yahoo Finance (yfinance) API to download historical and real-time ticker data.
+
+Storage: * Approximately 500MB of disk space for the Docker image and cached market data.
+
+Architecture Support: * The provided Dockerfile is compatible with both ARM64 (Apple Silicon M1/M2/M3) and x86_64 (Intel/AMD) architectures.
 ====================================================================================
 # **⚠️ Disclaimer and Terms of Use**
 **1. Educational Purpose Only**

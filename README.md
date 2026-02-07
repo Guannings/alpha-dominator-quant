@@ -35,7 +35,7 @@ cd alpha-dominator-quant
 
 ### 4. Build the Docker Image (This installs the Python 3.11 environment + XGBoost + SHAP.)
 ```bash
-docker build -t alpha-dominator .
+docker build --no-cache -t alpha-dominator .
 ```
 
 ### 5. Launching the Dashboard
@@ -55,6 +55,14 @@ Option B: Custom Port (e.g., 1546)
 docker run --rm --dns 8.8.8.8 -p 1546:8501 alpha-dominator
 ```
 Access at: Local URL
+
+Option C: The "One-Click" Launch
+To avoid Docker caching issues and ensure the latest 1M simulation settings are applied, run the automated launch script:
+
+```bash
+chmod +x run_app.sh
+./run_app.sh
+```
 
 ### 💡 Troubleshooting & Best Practices
 

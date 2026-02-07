@@ -1192,7 +1192,7 @@ class BacktestEngine:
 class MonteCarloSimulator:
     """Monte Carlo with daily RF rate."""
 
-    def __init__(self, n_simulations: int = 10000, projection_years: int = 5,
+    def __init__(self, n_simulations: int = 1000000, projection_years: int = 5,
                  risk_free_rate: float = 0.04):
         self.n_simulations = n_simulations
         self.projection_years = projection_years

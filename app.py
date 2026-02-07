@@ -1583,7 +1583,7 @@ def main():
     )
 
     n_simulations = st.sidebar.number_input(
-        "Monte Carlo Simulations",
+        "Monte Carlo Simulations (Max: 1M)",
         min_value=1000,
         max_value=1000000,
         value=1000000,

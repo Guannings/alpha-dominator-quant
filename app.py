@@ -1587,7 +1587,8 @@ def main():
         min_value=1000,
         max_value=1000000,
         value=1000000,
-        step=1000,
+        step=10000,
+        key="sim_input_v2",  # <--- ADDED UNIQUE KEY (This breaks the cache)
         help="Number of Monte Carlo simulations for stress testing"
     )
 

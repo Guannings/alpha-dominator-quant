@@ -45,20 +45,20 @@ You can choose the port that best fits your local setup:
 Option A: Default Port (8501)
 
 ```bash
-docker run --rm -p 8501:8501 alpha-dominator
+docker run --rm --dns 8.8.8.8 -p 8501:8501 alpha-dominator
 ```
 Access at: Local URL
 
 Option B: Custom Port (e.g., 1546)
 
 ```bash
-docker run --rm -p 1546:8501 alpha-dominator
+docker run --rm --dns 8.8.8.8 -p 1546:8501 alpha-dominator
 ```
 Access at: Local URL
 
 **Port Conflicts:**
 
-**If port 8501 and 1546 are both busy, simply use Option B above to map it to a different local port (replace the 4-digit number before -8501 to with a 4-digit number of your choice).**
+**If ports 8501 and 1546 are both busy, simply use Option B above to map it to a different local port (replace the 4-digit number before -8501 to with a 4-digit number of your choice).**
 
 ====================================================================================
 

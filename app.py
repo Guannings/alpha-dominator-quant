@@ -1661,7 +1661,25 @@ def main():
     # Get aligned data
     prices, returns, features, vix, sma_200, above_sma, raw_mom, rs, vols, ir = dm.get_aligned_data()
     categories = dm.get_asset_categories()
+    # ... inside main() ...
+    # Get aligned data
+    prices, returns, features, vix, sma_200, above_sma, raw_mom, rs, vols, ir = dm.get_aligned_data()
 
+    # --- ADD THIS GATEKEEPER ---
+    required_days = 252 + 50  # 1 Year Lookback + 2 Months Buffer for ML/Indicators
+    if len(prices) < required_days:
+        st.error(f"""
+            ⛔ **INSUFFICIENT DATA FOR ROBUST BACKTEST**
+
+            The strategy requires at least **{required_days} trading days** (approx 1.5 years) to calculate the 252-day Volatility Lookback and initial ML training.
+
+            **Current Data Length:** {len(prices)} days
+
+            **Action Required:**
+            Please adjust the **Start Date** in your `DataManager` to be earlier (e.g., '2015-01-01').
+            """)
+        st.stop()  # Stops the app here so it doesn't crash with a traceback later
+    # ---------------------------
     with st.spinner("🧠 Training regime classifier (cached)..."):
         classifier, ml_probs = train_classifier_cached(dm, returns, features)
 

@@ -1586,7 +1586,7 @@ def main():
         "Monte Carlo Simulations",
         min_value=1000,
         max_value=1000000,
-        value=10000,
+        value=1000000,
         step=1000,
         help="Number of Monte Carlo simulations for stress testing"
     )

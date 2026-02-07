@@ -1198,8 +1198,12 @@ class BacktestEngine:
 # MONTE CARLO SIMULATOR
 # =============================================================================
 
+# =============================================================================
+# MONTE CARLO SIMULATOR (MEMORY OPTIMIZED)
+# =============================================================================
+
 class MonteCarloSimulator:
-    """Monte Carlo with daily RF rate."""
+    """Monte Carlo with Low-Memory Footprint (Batched Processing)."""
 
     def __init__(self, n_simulations: int = 1000000, projection_years: int = 5,
                  risk_free_rate: float = 0.04):
@@ -1207,51 +1211,67 @@ class MonteCarloSimulator:
         self.projection_years = projection_years
         self.n_days = projection_years * 252
         self.risk_free_rate = risk_free_rate
-        self.rf_daily = (1 + risk_free_rate) ** (1 / 252) - 1
 
-        self.price_paths: Optional[np.ndarray] = None
+        # We only store full paths for a small subset to save RAM
+        self.n_display_paths = 50000
+        self.display_paths: Optional[np.ndarray] = None
+
         self.ending_values: Optional[np.ndarray] = None
         self.sim_cagrs: Optional[np.ndarray] = None
         self.initial_value: float = 0.0
-        self.mu_annual: float = 0.0
         self.sigma_annual: float = 0.0
 
     def run(self, returns: pd.DataFrame, weights: np.ndarray, assets: List[str],
             initial_value: float, lookback_years: float = 2.0) -> Dict:
-        """Run simulation."""
-        logger.info(f"Monte Carlo: {self.n_simulations:,} sims")
+        """Run simulation using iterative updates to prevent OOM crashes."""
+        logger.info(f"Monte Carlo: {self.n_simulations:,} sims (Optimized)")
 
         self.initial_value = initial_value
 
         lookback_days = int(lookback_years * 252)
-        recent_ret = returns[assets].iloc[-lookback_days:]
+        # Add safety check for lookback
+        actual_lookback = min(lookback_days, len(returns) - 1)
+        recent_ret = returns[assets].iloc[-actual_lookback:]
+
         port_ret = recent_ret.dot(weights)
 
         mu_daily = port_ret.mean()
         sigma_daily = port_ret.std()
-
-        self.mu_annual = mu_daily * 252
         self.sigma_annual = sigma_daily * np.sqrt(252)
 
+        # Drift calculation
         drift = mu_daily - 0.5 * sigma_daily ** 2
 
+        # Initialize arrays
+        # We track current value for ALL sims, but history for only a few
+        current_values = np.full(self.n_simulations, initial_value)
+        self.display_paths = np.zeros((self.n_days + 1, self.n_display_paths))
+        self.display_paths[0] = initial_value
+
         np.random.seed(42)
-        Z = np.random.standard_normal((self.n_days, self.n_simulations))
-        log_returns = drift + sigma_daily * Z
 
-        self.price_paths = np.zeros((self.n_days + 1, self.n_simulations))
-        self.price_paths[0] = initial_value
-
+        # Iterative update loop (Saves ~10GB of RAM)
+        # Instead of creating a (1260 x 1000000) matrix, we process day-by-day
         for t in range(1, self.n_days + 1):
-            self.price_paths[t] = self.price_paths[t - 1] * np.exp(log_returns[t - 1])
+            # Generate random shocks for this day
+            Z = np.random.standard_normal(self.n_simulations)
 
-        self.ending_values = self.price_paths[-1]
+            # Calculate returns for this day
+            daily_returns = np.exp(drift + sigma_daily * Z)
+
+            # Update current values
+            current_values *= daily_returns
+
+            # Save history only for the display paths (the first 200)
+            self.display_paths[t] = current_values[:self.n_display_paths]
+
+        self.ending_values = current_values
         self.sim_cagrs = (self.ending_values / initial_value) ** (1 / self.projection_years) - 1
 
         return self._calculate_statistics()
 
     def _calculate_statistics(self) -> Dict:
-        """Stats."""
+        """Calculate aggregate statistics."""
         mean_cagr = np.mean(self.sim_cagrs)
         sharpe = (mean_cagr - self.risk_free_rate) / self.sigma_annual if self.sigma_annual > 0 else 0
 
@@ -1265,37 +1285,42 @@ class MonteCarloSimulator:
         }
 
     def get_paths_figure(self, n_display: int = 100) -> Optional[plt.Figure]:
-        """Generate paths figure."""
-        if self.price_paths is None:
+        """Generate paths figure from the saved subset."""
+        if self.display_paths is None:
             return None
 
         fig, ax = plt.subplots(figsize=(14, 8))
 
+        # Use the subset we saved
+        # We ensure we don't ask for more paths than we saved
+        n_plot = min(n_display, self.n_display_paths)
+        paths_to_plot = self.display_paths[:, :n_plot]
+        ending_values_subset = paths_to_plot[-1]
+
+        # Dynamic coloring based on ending value
         cmap = plt.get_cmap('RdYlGn')
+        # Normalize colors based on the full simulation range, not just the subset
         norm = plt.Normalize(np.percentile(self.ending_values, 5),
                              np.percentile(self.ending_values, 95))
 
-        np.random.seed(123)
-        idx = np.random.choice(self.n_simulations, min(n_display, self.n_simulations), replace=False)
-
         days = np.arange(self.n_days + 1)
-        for i in idx:
-            ax.plot(days, self.price_paths[:, i],
-                    color=cmap(norm(self.ending_values[i])), alpha=0.3, linewidth=0.5)
+        for i in range(paths_to_plot.shape[1]):
+            ax.plot(days, paths_to_plot[:, i],
+                    color=cmap(norm(ending_values_subset[i])), alpha=0.3, linewidth=0.5)
 
-        p5 = np.percentile(self.price_paths, 2.5, axis=1)
-        p95 = np.percentile(self.price_paths, 97.5, axis=1)
-        mean_path = np.mean(self.price_paths, axis=1)
+        # Calculate mean path from the subset for visualization
+        mean_path = np.mean(paths_to_plot, axis=1)
 
-        ax.fill_between(days, p5, p95, color='lightblue', alpha=0.3, label='95% CI')
-        ax.plot(days, mean_path, 'r-', linewidth=2.5, label=f'Mean: ${mean_path[-1]:,.0f}')
+        ax.plot(days, mean_path, 'r-', linewidth=2.5, label=f'Subset Mean')
 
         sm = plt.cm.ScalarMappable(cmap=cmap, norm=norm)
         plt.colorbar(sm, ax=ax, label='Ending Value ($)', pad=0.01)
 
         stats = self._calculate_statistics()
-        ax.set_title(f'Monte Carlo | CAGR: {stats["mean_cagr"]:.1%} | Sharpe: {stats["sharpe"]:.2f}', fontsize=11)
-        ax.set_xlabel('Trading Days')
+        ax.set_title(
+            f'Monte Carlo ({self.n_simulations:,} Sims) | CAGR: {stats["mean_cagr"]:.1%} | Sharpe: {stats["sharpe"]:.2f}',
+            fontsize=11)
+        ax.set_xlabel('Trading Days (5 Years)')
         ax.set_ylabel('Portfolio Value ($)')
         ax.yaxis.set_major_formatter(plt.FuncFormatter(lambda x, p: f'${x:,.0f}'))
         ax.legend(loc='upper left')
@@ -1313,6 +1338,7 @@ class MonteCarloSimulator:
 
         stats = self._calculate_statistics()
 
+        # Histogram of CAGR
         w = np.ones_like(self.sim_cagrs) / len(self.sim_cagrs)
         n, bins, patches = ax1.hist(self.sim_cagrs, bins=60, weights=w, edgecolor='white', alpha=0.7)
 
@@ -1332,6 +1358,7 @@ class MonteCarloSimulator:
         ax1.legend()
         ax1.grid(axis='y', alpha=0.3)
 
+        # Histogram of Ending Values
         w2 = np.ones_like(self.ending_values) / len(self.ending_values)
         ax2.hist(self.ending_values / 1000, bins=60, weights=w2, color='#198964', edgecolor='white', alpha=0.7)
         ax2.axvline(stats['mean_ending'] / 1000, color='red', linewidth=2,
